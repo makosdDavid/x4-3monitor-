@@ -1,0 +1,29 @@
+{
+  "_comment": "Copy to settings.json and adjust. Every key is optional; an empty string means auto-detect / default.",
+  "profileDir": "",
+  "_profileDir": "X4 profile folder holding config.xml. Empty = the numeric folder under Documents\\Egosoft\\X4 whose config.xml was written last.",
+  "gameExe": "",
+  "_gameExe": "Full path of X4.exe. Empty = <this folder>\\..\\..\\X4.exe if it exists, else ANY process named X4 counts as the running game.",
+  "backupDir": "",
+  "_backupDir": "Where config.xml backups go (timestamped, never deleted by the tool). Empty = <this folder>\\backups.",
+  "stateDir": "",
+  "companionSkipFlag": "",
+  "_companionSkipFlag": "File created while cockpit mode is on, for a companion-window launcher to honour. Empty = <stateDir>\\cockpit-active.flag, 'none' = no flag.",
+  "companionWindowTitle": "X4 Companion",
+  "centreMatch": "",
+  "_centreMatch": "Regex on the EDID code (e.g. AUS3438) or monitor name of the centre monitor. Empty = the primary monitor.",
+  "sideMatch": "",
+  "_sideMatch": "Regex on the EDID code or name of the side monitors (e.g. DELD05F|P2714H). Empty = any other monitor.",
+  "yTolerancePx": 8,
+  "fovBaseAspect": 1.7778,
+  "cockpit": {
+    "_comment": "Exactly these config.xml keys are written by cockpit-on (set one to null to leave it alone).",
+    "fullscreen": "false",
+    "borderless": "false",
+    "res_width": "7280",
+    "res_height": "1440",
+    "fov": "0.6667",
+    "menuwidthscale": "0.47",
+    "confinemouse": "true"
+  }
+}

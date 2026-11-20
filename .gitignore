@@ -1,0 +1,5 @@
+# machine-local
+settings.json
+state/
+backups/
+tests/_work/
