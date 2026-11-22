@@ -313,18 +313,27 @@ if (-not $ok) { Say 'The driver refused every combination; restoring the previou
 
 # ---------- 5. keep or go back ----------
 Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
-$target = [System.Windows.Forms.Screen]::PrimaryScreen
-if ($lap -and -not $detach) { $s = [System.Windows.Forms.Screen]::AllScreens | Where-Object { $_.DeviceName -eq $lap.Dev } | Select-Object -First 1; if ($s) { $target = $s } }
-if ($detach) { $t = [System.Windows.Forms.Screen]::AllScreens | Where-Object { $_.Bounds.Width -eq 1920 -and $_.Bounds.X -ne 0 } | Select-Object -First 1; if ($t) { $target = $t } }   # ask on a Dell, the ultrawide may be the one in trouble
-$form = New-Object System.Windows.Forms.Form
-$form.Text = 'Monitor settings'; $form.TopMost = $true; $form.StartPosition = 'Manual'; $form.Size = New-Object System.Drawing.Size(560, 220)
-$form.Location = New-Object System.Drawing.Point(($target.Bounds.X + [int](($target.Bounds.Width - 560) / 2)), ($target.Bounds.Y + [int](($target.Bounds.Height - 220) / 2)))
-$lbl = New-Object System.Windows.Forms.Label; $lbl.SetBounds(20, 20, 510, 70); $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 12); $form.Controls.Add($lbl)
-$keep = New-Object System.Windows.Forms.Button; $keep.Text = 'Megtartom'; $keep.SetBounds(60, 110, 200, 50); $keep.DialogResult = 'OK'; $form.Controls.Add($keep)
-$back = New-Object System.Windows.Forms.Button; $back.Text = 'Vissza az elozore'; $back.SetBounds(290, 110, 200, 50); $back.DialogResult = 'Cancel'; $form.Controls.Add($back)
-$script:remain = $KeepSeconds
-$timer = New-Object System.Windows.Forms.Timer; $timer.Interval = 1000
-$timer.Add_Tick({ $script:remain--; $lbl.Text = "Jo a kep mindegyik monitoron?`nHa nem valaszolsz, $($script:remain) mp mulva visszaall az elozo beallitas."; if ($script:remain -le 0) { $timer.Stop(); $form.DialogResult = 'Cancel'; $form.Close() } })
-$lbl.Text = "Jo a kep mindegyik monitoron?`nHa nem valaszolsz, $KeepSeconds mp mulva visszaall az elozo beallitas."
-$timer.Start(); $answer = $form.ShowDialog(); $timer.Stop()
-if ($answer -eq 'OK') { Say 'kept.' } else { Say 'not confirmed - going back to the previous settings'; [void](Apply-Set $prev 'restore') }
+# The question is shown on EVERY screen that is part of the desktop right now (a switched-off laptop panel is
+# not among them, so no window can land there); a click on any copy answers for all.
+$script:answer = ''
+$forms = @(); $labels = @()
+foreach ($scr in [System.Windows.Forms.Screen]::AllScreens) {
+    $w = [Math]::Min(560, $scr.Bounds.Width - 20); $h = 220
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'Monitor settings'; $form.TopMost = $true; $form.StartPosition = 'Manual'; $form.ShowInTaskbar = $false; $form.ControlBox = $false
+    $form.Size = New-Object System.Drawing.Size($w, $h)
+    $form.Location = New-Object System.Drawing.Point(($scr.Bounds.X + [int](($scr.Bounds.Width - $w) / 2)), ($scr.Bounds.Y + [int](($scr.Bounds.Height - $h) / 2)))
+    $lbl = New-Object System.Windows.Forms.Label; $lbl.SetBounds(20, 20, ($w - 50), 70); $lbl.Font = New-Object System.Drawing.Font('Segoe UI', 12); $form.Controls.Add($lbl); $labels += $lbl
+    $bw = [int](($w - 90) / 2)
+    $keep = New-Object System.Windows.Forms.Button; $keep.Text = 'Megtartom'; $keep.SetBounds(30, 110, $bw, 50); $keep.Add_Click({ $script:answer = 'keep' }); $form.Controls.Add($keep)
+    $back = New-Object System.Windows.Forms.Button; $back.Text = 'Vissza az elozore'; $back.SetBounds((45 + $bw), 110, $bw, 50); $back.Add_Click({ $script:answer = 'back' }); $form.Controls.Add($back)
+    $form.Show(); $forms += $form
+}
+$sw = [Diagnostics.Stopwatch]::StartNew()
+while (-not $script:answer -and $sw.Elapsed.TotalSeconds -lt $KeepSeconds) {
+    $secLeft = [int]($KeepSeconds - $sw.Elapsed.TotalSeconds)
+    foreach ($l in $labels) { $l.Text = "Jo a kep mindegyik monitoron?`nHa nem valaszolsz, $secLeft mp mulva visszaall az elozo beallitas." }
+    [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100
+}
+foreach ($f in $forms) { $f.Close(); $f.Dispose() }
+if ($script:answer -eq 'keep') { Say 'kept.' } else { Say 'not confirmed - going back to the previous settings'; [void](Apply-Set $prev 'restore') }
