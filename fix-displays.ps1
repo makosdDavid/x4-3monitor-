@@ -2,7 +2,8 @@
 fix-displays.ps1 - puts the monitors into their proper modes and arrangement in one go.
 
 What it does (in this order):
-  1. If external monitors are connected but the desktop is on the laptop panel only, switches to "Extend".
+  1. Switches on every connected monitor that is not part of the desktop yet (with -NoLaptop: every one except
+     the laptop panel). Monitors that are already on keep their output; nothing is dropped.
   2. Identifies every active monitor by its EDID code (not by number or resolution).
   3. Picks the best mode Windows currently offers for each one:
         ultrawide (AUS3438)      3440x1440 at the highest refresh offered; if the output it is on cannot
@@ -11,7 +12,7 @@ What it does (in this order):
         laptop panel             keeps its current mode
   4. Arrangement: ultrawide = main display at 0,0; one Dell directly left, one directly right, both
      vertically centred; laptop panel left of the left Dell.
-  5. Applies everything in one step, then asks "keep?" on the laptop panel; no answer in 20 s = back to the
+  5. Applies everything in one step, then asks "keep?" on every active screen; no answer in 20 s = back to the
      previous settings (same safety net as the Windows "Keep these display settings?" box).
 
 Usage:
@@ -37,6 +38,26 @@ if (-not (Test-Path $stateDir)) { New-Item -ItemType Directory -Force $stateDir 
 $stateFile = Join-Path $stateDir 'displays-previous.json'
 $logFile = Join-Path $stateDir 'fix-displays.log'
 function Say($t) { $line = (Get-Date).ToString('HH:mm:ss') + '  ' + $t; Write-Host $line; Add-Content -LiteralPath $logFile -Value $line -Encoding UTF8 }
+
+# One run at a time: the shortcut starts hidden, and a second click while the first run is still working made
+# two runs fight over the settings. A second start now simply leaves.
+$script:busy = $null
+if (-not $WhatIf) {
+    $script:mutex = New-Object System.Threading.Mutex($false, 'Local\x4cockpit3-fix-displays')
+    $got = $false; try { $got = $script:mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $got = $true }
+    if (-not $got) { Say 'another run is still working - leaving'; exit 0 }
+    # immediate feedback, so it is visible that the click was taken
+    Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
+    $ps = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+    $script:busy = New-Object System.Windows.Forms.Form
+    $script:busy.Text = 'Monitor settings'; $script:busy.TopMost = $true; $script:busy.StartPosition = 'Manual'; $script:busy.ShowInTaskbar = $false; $script:busy.ControlBox = $false
+    $script:busy.Size = New-Object System.Drawing.Size(420, 110)
+    $script:busy.Location = New-Object System.Drawing.Point(($ps.X + [int](($ps.Width - 420) / 2)), ($ps.Y + 60))
+    $bl = New-Object System.Windows.Forms.Label; $bl.SetBounds(20, 20, 370, 40); $bl.Font = New-Object System.Drawing.Font('Segoe UI', 12)
+    $bl.Text = $(if ($Revert) { 'Elozo beallitas visszaallitasa...' } elseif ($NoLaptop) { 'Laptop kijelzo KI, monitorok beallitasa...' } else { 'Laptop kijelzo BE, monitorok beallitasa...' })
+    $script:busy.Controls.Add($bl); $script:busy.Show(); [System.Windows.Forms.Application]::DoEvents()
+}
+function Close-Busy { if ($script:busy) { $script:busy.Close(); $script:busy.Dispose(); $script:busy = $null } }
 
 Add-Type @'
 using System; using System.Collections.Generic; using System.Runtime.InteropServices;
@@ -106,6 +127,50 @@ public static class DispFix {
 }
 '@
 
+# Switching a connected-but-dark monitor ON. DisplaySwitch.exe /extend proved unreliable here (did nothing, or
+# brought the laptop panel up and dropped both dock monitors), so the path is added explicitly: every active
+# path is kept exactly as it is, and one new path per wanted monitor is added on a free output of the card.
+Add-Type @'
+using System; using System.Collections.Generic; using System.Runtime.InteropServices;
+public static class DispTopo {
+  [StructLayout(LayoutKind.Sequential)] public struct LUID { public uint Low; public int High; }
+  [StructLayout(LayoutKind.Sequential)] public struct RATIONAL { public uint Num; public uint Den; }
+  [StructLayout(LayoutKind.Sequential)] public struct PATH_SOURCE { public LUID adapterId; public uint id; public uint modeInfoIdx; public uint statusFlags; }
+  [StructLayout(LayoutKind.Sequential)] public struct PATH_TARGET { public LUID adapterId; public uint id; public uint modeInfoIdx; public uint outputTechnology; public uint rotation; public uint scaling; public RATIONAL refreshRate; public uint scanLineOrdering; public int targetAvailable; public uint statusFlags; }
+  [StructLayout(LayoutKind.Sequential)] public struct PATH_INFO { public PATH_SOURCE source; public PATH_TARGET target; public uint flags; }
+  [StructLayout(LayoutKind.Sequential)] public struct MODE_INFO { public uint infoType; public uint id; public LUID adapterId; public ulong d0, d1, d2, d3, d4, d5; }
+  [DllImport("user32.dll")] static extern int GetDisplayConfigBufferSizes(uint flags, out uint numPath, out uint numMode);
+  [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint numPath, [In, Out] PATH_INFO[] paths, ref uint numMode, [In, Out] MODE_INFO[] modes, IntPtr topo);
+  [DllImport("user32.dll")] static extern int SetDisplayConfig(uint numPath, [In] PATH_INFO[] paths, uint numMode, [In] MODE_INFO[] modes, uint flags);
+  static bool IsInternal(uint tech) { return tech == 0x80000000u || tech == 11 || tech == 13 || tech == 6; }
+  static string K(LUID a, uint id) { return a.High + ":" + a.Low + ":" + id; }
+  // returns "code|text"; code 0 = accepted, -1 = nothing to switch on. validateOnly asks the driver and changes nothing.
+  public static string Enable(bool internalPanel, bool externals, bool validateOnly) {
+    uint np, nm; int rc = GetDisplayConfigBufferSizes(1, out np, out nm); if (rc != 0) return rc + "|reading the display paths failed";
+    PATH_INFO[] paths = new PATH_INFO[np]; MODE_INFO[] modes = new MODE_INFO[nm];
+    rc = QueryDisplayConfig(1, ref np, paths, ref nm, modes, IntPtr.Zero); if (rc != 0) return rc + "|reading the display paths failed";
+    var keep = new List<PATH_INFO>(); var usedSrc = new HashSet<string>(); var activeTgt = new HashSet<string>();
+    for (int i = 0; i < np; i++) if ((paths[i].flags & 1) != 0) { keep.Add(paths[i]); usedSrc.Add(K(paths[i].source.adapterId, paths[i].source.id)); activeTgt.Add(K(paths[i].target.adapterId, paths[i].target.id)); }
+    int added = 0; string what = "";
+    for (int i = 0; i < np; i++) {
+      PATH_INFO p = paths[i];
+      if ((p.flags & 1) != 0 || p.target.targetAvailable == 0) continue;
+      string tk = K(p.target.adapterId, p.target.id); if (activeTgt.Contains(tk)) continue;
+      bool inner = IsInternal(p.target.outputTechnology);
+      if (inner ? !internalPanel : !externals) continue;
+      string sk = K(p.source.adapterId, p.source.id); if (usedSrc.Contains(sk)) continue;
+      p.flags = 1; p.source.modeInfoIdx = 0xFFFFFFFFu; p.target.modeInfoIdx = 0xFFFFFFFFu;
+      keep.Add(p); usedSrc.Add(sk); activeTgt.Add(tk); added++;
+      what += (inner ? " laptop panel" : " external monitor") + " (target 0x" + p.target.id.ToString("X") + ")";
+    }
+    if (added == 0) return "-1|nothing to switch on";
+    uint flags = 0x20u | 0x400u | (validateOnly ? 0x40u : (0x80u | 0x200u));   // supplied config + allow changes; validate | apply + save
+    rc = SetDisplayConfig((uint)keep.Count, keep.ToArray(), nm, modes, flags);
+    return rc + "|" + (validateOnly ? "driver test for switching on" : "switching on") + what;
+  }
+}
+'@
+
 function Get-Outputs {
     $list = @()
     # how each connected monitor is attached: 5 = the laptop's own HDMI, 10 = DisplayPort external (the dock), 11 = internal
@@ -156,19 +221,29 @@ $connected = @(Get-CimInstance -Namespace root\wmi -ClassName WmiMonitorID -Erro
 $outs = @(Get-Outputs)
 Say ("connected monitors: $connected, part of the desktop: " + $outs.Count)
 $needExtend = $connected -gt $outs.Count
+$wanted = $connected
 if ($NoLaptop) {
-    # the laptop panel is meant to stay off: only extend when an EXTERNAL monitor is missing from the desktop
+    # the laptop panel is meant to stay off: only switch on when an EXTERNAL monitor is missing from the desktop
     $externalsOn = @($outs | Where-Object { $_.Role -ne 'laptop' }).Count
     $needExtend = ($connected - 1) -gt $externalsOn
+    $wanted = $externalsOn + $(if (@($outs | Where-Object { $_.Role -eq 'laptop' }).Count) { 1 } else { 0 })
+    if ($needExtend) { $wanted = $connected - 1 + $(if (@($outs | Where-Object { $_.Role -eq 'laptop' }).Count) { 1 } else { 0 }) }
 }
+# the state to go back to, taken BEFORE anything is switched on
+$lapWasOn = [bool](@($outs | Where-Object { $_.Role -eq 'laptop' }).Count)
+$prevBefore = @($outs | ForEach-Object { [pscustomobject]@{ Dev = $_.Dev; Code = $_.Code; W = $_.W; H = $_.H; Hz = $_.Hz; X = $_.X; Y = $_.Y; Primary = ($_.X -eq 0 -and $_.Y -eq 0) } })
 if ($needExtend) {
-    if ($WhatIf) { Say 'WhatIf: would switch the projection mode to Extend (DisplaySwitch.exe /extend)' }
+    if ($WhatIf) { $r = [DispTopo]::Enable((-not $NoLaptop), $true, $true) -split '\|', 2; Say ("WhatIf: $($r[1]) -> " + $(if ($r[0] -eq '0') { 'accepted' } else { "refused (code $($r[0]))" }) + ' (nothing is changed)') }
     else {
-        Say 'switching the projection mode to Extend'
-        Start-Process DisplaySwitch.exe -ArgumentList '/extend'
-        # Windows needs a while to bring the monitors up; wait until all of them are on the desktop (max 25 s)
+        $r = [DispTopo]::Enable((-not $NoLaptop), $true, $false) -split '\|', 2
+        Say ("$($r[1]) : code $($r[0])  (0 = accepted)")
+        if ($r[0] -ne '0' -and $r[0] -ne '-1') {
+            Say 'falling back to the Windows projection switch (Extend)'
+            Start-Process DisplaySwitch.exe -ArgumentList '/extend'
+        }
+        # Windows needs a while to bring a monitor up; wait until the wanted ones are on the desktop (max 25 s)
         $sw = [Diagnostics.Stopwatch]::StartNew()
-        do { Start-Sleep -Seconds 2; $outs = @(Get-Outputs) } while ($outs.Count -lt $connected -and $sw.Elapsed.TotalSeconds -lt 25)
+        do { Start-Sleep -Seconds 2; $outs = @(Get-Outputs) } while ($outs.Count -lt $wanted -and $sw.Elapsed.TotalSeconds -lt 25)
         Start-Sleep -Seconds 2; $outs = @(Get-Outputs)
         Say ("part of the desktop now: " + $outs.Count + " of $connected")
     }
@@ -214,7 +289,22 @@ function Get-UwCandidates($u) {
     }
     $c
 }
-$prev0 = @($outs | ForEach-Object { [pscustomobject]@{ Dev = $_.Dev; Code = $_.Code; W = $_.W; H = $_.H; Hz = $_.Hz; X = $_.X; Y = $_.Y; Primary = ($_.X -eq 0 -and $_.Y -eq 0) } })
+$prev0 = $prevBefore
+function Restore-Previous {
+    # Output numbers can change when a monitor is switched on or off, so find each monitor again by its code.
+    $now = @(Get-Outputs)
+    if ($lapWasOn -and -not @($now | Where-Object { $_.Role -eq 'laptop' }).Count) {
+        $r = [DispTopo]::Enable($true, $false, $false) -split '\|', 2; Say ("restore: $($r[1]) : code $($r[0])"); Start-Sleep -Seconds 4; $now = @(Get-Outputs)
+    }
+    $set = @()
+    foreach ($s in $prev) {
+        $m = @($now | Where-Object { $_.Code -eq $s.Code })
+        if ($m.Count -eq 1) { $set += [pscustomobject]@{ Dev = $m[0].Dev; Code = $s.Code; W = $s.W; H = $s.H; Hz = $s.Hz; X = $s.X; Y = $s.Y; Primary = $s.Primary } } else { $set += $s }
+    }
+    $det = ''
+    if (-not $lapWasOn) { $l = $now | Where-Object { $_.Role -eq 'laptop' } | Select-Object -First 1; if ($l) { $det = $l.Dev } }
+    [void](Apply-Set $set 'restore' $det)
+}
 $cap = $null
 if ($SideMode -match '^(\d+)x(\d+)$') { $cap = @([int]$Matches[1], [int]$Matches[2]) }
 if ($cap -and -not $WhatIf) {
@@ -309,9 +399,10 @@ if ($ok -and $detach) {
 }
 Start-Sleep -Seconds 3
 Say 'after applying:'; foreach ($o in @(Get-Outputs)) { Say ('   ' + (Describe $o)) }
-if (-not $ok) { Say 'The driver refused every combination; restoring the previous settings.'; [void](Apply-Set $prev 'restore'); exit 3 }
+if (-not $ok) { Say 'The driver refused every combination; restoring the previous settings.'; Restore-Previous; exit 3 }
 
 # ---------- 5. keep or go back ----------
+Close-Busy
 Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing
 # The question is shown on EVERY screen that is part of the desktop right now (a switched-off laptop panel is
 # not among them, so no window can land there); a click on any copy answers for all.
@@ -336,4 +427,4 @@ while (-not $script:answer -and $sw.Elapsed.TotalSeconds -lt $KeepSeconds) {
     [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 100
 }
 foreach ($f in $forms) { $f.Close(); $f.Dispose() }
-if ($script:answer -eq 'keep') { Say 'kept.' } else { Say 'not confirmed - going back to the previous settings'; [void](Apply-Set $prev 'restore') }
+if ($script:answer -eq 'keep') { Say 'kept.' } else { Say 'not confirmed - going back to the previous settings'; Restore-Previous }
