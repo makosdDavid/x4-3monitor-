@@ -155,7 +155,7 @@ try {
     }
     Show-Companion $settings
     Write-Host ''
-    Write-Host 'Cockpit mode is ON. Next: start X4, load a save, then run  x4cockpit3.cmd uw-left-only  (or  triple  once the monitors are arranged).'
+    Write-Host 'Cockpit mode is ON. Next: start the game with  cockpit-launch.cmd -GameArgs "<your usual X4 arguments>"  (native window hook; see README).'
     exit 0
   }
 

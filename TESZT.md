@@ -1,57 +1,38 @@
-# Hárommonitoros pilótafülke — játékbeli teszt
+# Hárommonitoros pilótafülke — élő teszt a natív ablak-hookkal
 
-> **2026-11-22: a 3. lépés elbukott.** Az X4 9.00 a 7280 px helyett az elsődleges monitor munkaterületére
-> (3440×1392) korlátozza az ablakát, és sem programból, sem kézzel nem engedi elmozdítani. Ez a protokoll
-> ebben a formában nem folytatható. Ha a játék fut, a mechanizmus egy lépésben naplózható:
-> `powershell -ExecutionPolicy Bypass -File diag\x4winprobe.ps1 -Watch -Seconds 30` (közben próbáld kézzel
-> elhúzni az ablakot), majd `... diag\x4winprobe.ps1 -Experiments`. **Kérdés:** a naplóban 0 vagy legalább 2
-> „LOCATIONCHANGE” esemény van a hívásoknál? Utána `cockpit-off.cmd` (játék bezárva).
+> A régi út (az ablak kívülről nyújtása, `x4cockpit3.cmd triple`) 9.00 alatt nem működik (2026-11-22). Ez a
+> protokoll az új utat teszteli: a `cockpit-launch` maga indítja a játékot, és egy DLL-lel a játékon belül
+> irányítja át az ablakhívásokat. Ha bármi gond van: zárd be a játékot (Alt+F4), és indítsd a megszokott módon —
+> úgy semmi sem töltődik be belőle.
 
-Minden parancsot ebben a mappában futtass (PowerShell: `cd "D:\X4 Foundations Envoy Pack\tools\x4cockpit3"`,
-a parancsok elé `.\`). Minden lépésnél egy kérdésre válaszolj. Ha egy lépés elbukik, ugorj a 12. lépésre.
+Minden parancsot ebben a mappában futtass (PowerShell: `cd "<X4 mappa>\tools\x4cockpit3"`, a parancsok elé `.\`).
+Minden lépés végén egy kérdésre válaszolj.
 
-1. **Előkészítés (a játék BEZÁRVA).** Mentés, kilépés. Ha nyitva van a Companion-ablak, zárd be.
-   `cockpit-on.cmd -WhatIf`, majd `cockpit-on.cmd`
-   **Kérdés:** a végén ott van-e: „Cockpit mode is ON”, és kiírt-e egy `backup :` sort?
+1. **Előkészítés (a játék BEZÁRVA).** Ha nyitva van a Companion-ablak, zárd be. Ha a cockpit mód még nincs bekapcsolva:
+   `cockpit-on.cmd`. Utána: `cockpit-launch.cmd -WhatIf -GameArgs "-debug all -logfile debug.log"`
+   **Kérdés:** a végén ott van-e `rect   : (-1920,0) 7280x1440`, `mode   : cockpit ON` és `WhatIf: nothing started`?
+   (Ha „REFUSED” áll ott, a „!” sorok megmondják, mit kell a Windows kijelzőbeállításaiban áthelyezni.)
 
-2. **Indítás, átrendezés nélkül.** Indítsd a játékot, töltsd be a mentést. A játék keretes ablakban indul.
-   **Kérdés:** elindult-e a játék és betöltődött-e a mentés, vagy összeomlott / hibát írt?
+2. **Csak a főmenüig.** `cockpit-launch.cmd -GameArgs "-debug all -logfile debug.log"` — várd meg a főmenüt,
+   **ne tölts be mentést**, majd lépj ki a játékból.
+   **Átment, ha mindkettő igaz:**
+   - `native\out\x4c3hook.log`-ban van egy sor: `window created as borderless popup at the rectangle: ...
+     window=(-1920,0) 7280x1440 client=7280x1440`;
+   - a játék `debug.log`-jában (a profilmappában, a `config.xml` mellett) a `Resolution:` szó után (szóközökkel kitöltve) `7280 x 1440` áll (eddig: `3424 x 1353`). Gyors keresés: `Select-String -Path <profilmappa>\debug.log -Pattern "Resolution:"`
+   **Kérdés:** a főmenü mindhárom monitoron egy képként jelent-e meg, és igaz-e a fenti két napló-feltétel?
+   Ha nem: küldd el a két naplót (`x4c3hook.log`, `debug.log`) és a `native\out\launcher.log`-ot.
 
-3. **Elfogadja-e a 7280 px széles ablakot?** Alt+Tab ide (a laptop-panelre), majd: `x4cockpit3.cmd uw-left-only`
-   A kép a bal Dellre és az ultrawide-ra kerül; a jobb oldali 1920 px képen kívül van (ez itt rendben van).
-   **Kérdés:** a Dell és az ultrawide egy összefüggő, éles képet mutat-e, a célkereszt az ultrawide közepén van-e
-   (és nem nyúlt/elmosódott/fekete a kép, nem ugrott vissza az ablak)?
+3. **Menük, HUD, térkép.** Indítsd újra ugyanígy, töltsd be a mentést. Nyisd meg: térkép (M), enciklopédia, egy
+   kereskedelmi menü; jelölj ki egy célpontot; nézd meg a külső nézetet.
+   **Kérdés:** a menük az ultrawide-on maradnak-e, látszik-e a térkép tartalma, és hol van kényelmetlen a HUD?
 
-4. **Hor+ próba.** `x4cockpit3.cmd single`, nézd meg a középen lévő tárgyakat, majd `x4cockpit3.cmd uw-left-only`.
-   **Kérdés:** a középen lévő tárgyak ugyanakkorák-e az ultrawide-on a két állapotban?
+4. **Egér és ablak.** Repülj egérrel, vidd a kurzort mindkét Dellre, kattints ott is. Alt+Tab ki, majd vissza.
+   **Kérdés:** a kurzor eléri-e a Delleket, működik-e ott a kattintás, és Alt+Tab után ugyanott van-e a kép?
 
-5. **Menük és HUD.** Nyisd meg: térkép (M), enciklopédia, egy kereskedelmi menü, célpont kijelölése, külső nézet.
-   Jegyezd fel az FPS-t (bal felső sarok) itt és a 4. lépés `single` állapotában.
-   **Kérdés:** minden menü az ultrawide-on belül marad-e, látszik-e a térkép tartalma, és mennyi a két FPS?
+5. **FPS.** Jegyezd fel az FPS-t egy üres szektorban és egy állomásnál (DLSS: Performance).
+   **Kérdés:** mennyi az FPS, és akad-e a kép a Delleken?
 
-6. *(Opcionális)* **60° alatti FOV.** Lépj ki. A `settings.json`-ban írd át: `"fov": "0.6111"` (55°), futtasd
-   `cockpit-on.cmd`, indítsd a játékot, lépj ki újra, majd: `powershell -ExecutionPolicy Bypass -File cockpit.ps1 status`
-   **Kérdés:** a `fov` sor „now 0.6111”-et mutat-e (megtartotta a játék), és szűkebb volt-e a kép, mint 60°-nál?
-
-7. **Átrendezés (te csinálod).** Kösd be a második Dellt (most a Windows csak egy Dellt lát, a harmadik kijelző
-   a laptop saját panelje). Gépház → Rendszer → Kijelző: az egyik Dell az ultrawide BAL, a másik a JOBB oldalára,
-   mindkettő függőlegesen középre. Utána: `x4cockpit3.cmd`
-   **Kérdés:** a `triple` alatt „ARRANGEMENT: OK” áll-e? (Ha nem, a „!” sorok pontosan megmondják, mit hova tegyél.)
-
-8. **A teljes pilótafülke.** Játék indítása, mentés betöltése, majd `x4cockpit3.cmd triple`
-   **Kérdés:** mindhárom monitoron egy összefüggő kép van-e, a célkereszt az ultrawide közepén?
-
-9. **Elhelyezés.** Ultrawide kb. 51 cm-re a szemedtől, a Dellek kb. 69 cm-re, előre nézve (nem befelé fordítva),
-   a középpontjuk szemmagasságban, kifelé tolva (a középpontjuk kb. 83 cm-re a szemed vonalától).
-   **Kérdés:** a Dell–ultrawide határon a vonalak (állomásélek, horizont) törés nélkül folytatódnak-e?
-
-10. **FPS és DLSS.** Beállítások → Grafika: DLSS Quality, majd Performance; üres szektor, állomás, csata.
-    **Kérdés:** mennyi az FPS a két beállítással, és akad-e a kép a Delleken?
-
-11. **Egér.** Repülj egérrel, kattints menükben, vidd a kurzort a Dellekre.
-    **Kérdés:** a kurzor az ablakban marad-e, és működik-e a kattintás a Delleken is?
-
-12. **Visszaállítás.** Lépj ki a játékból, majd `cockpit-off.cmd`, végül
-    `powershell -ExecutionPolicy Bypass -File cockpit.ps1 status`
-    **Kérdés:** „mode : OFF” áll-e, és a következő játékindításkor a megszokott módon (Borderless, 120°) indul-e,
-    a Companion-ablakkal együtt? Küldd el, melyik lépés bukott el, a `debug.log`-gal (`/x4-debug`).
+6. **Visszaállítás.** Lépj ki a játékból, majd `cockpit-off.cmd`, végül
+   `powershell -ExecutionPolicy Bypass -File cockpit.ps1 status`
+   **Kérdés:** „mode   : OFF” áll-e, és a következő, megszokott indításkor a játék a régi módon (Borderless, 120°)
+   indul-e, a Companion-ablakkal együtt?

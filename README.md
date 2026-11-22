@@ -4,11 +4,105 @@ A small Windows PowerShell kit that lets **X4: Foundations 9.00** draw one wide 
 **side monitor | centre monitor | side monitor** (reference setup: Dell 27" 1080p | ASUS 34" 3440×1440 ultrawide | Dell 27" 1080p).
 
 It is the *simple wide window* approach: one game window, one flat projection, a narrower FOV.
-No driver tricks, no NVIDIA Surround, no injected code, no game files modified.
+No driver tricks, no NVIDIA Surround, no game files modified.
 
-> **Status: the simple wide window does NOT work with X4 9.00** (live test 2026-11-22, see "Live test result").
-> The tools stay useful for the arrangement check, the config switch and as building blocks for the routes
-> listed there, but stretching the game window from outside is refused by the game.
+> **Status:** stretching the window from outside does NOT work with X4 9.00 (live test 2026-11-22, see "Live test
+> result"). The **native window hook** (`cockpit-launch`, see below) is the route for 9.00: it loads a small DLL
+> into the game process so the game itself opens and keeps the wide window. Built and tested against an imitation
+> of X4's window behaviour; **not yet tested with the real game.**
+
+## Native window hook (`cockpit-launch`)
+
+**What it does, plainly:** `native\out\launcher.exe` starts `X4.exe` itself, loads our DLL `x4c3hook.dll` into the
+game process before the game's own code runs, and that DLL redirects a few of the game's Windows window/monitor
+calls. The game then creates ONE borderless window at the rectangle computed by the kit (7280×1440 at x=−1920,
+y=0 for the reference setup), keeps it there, and is told that this rectangle is its monitor and its work area.
+Nothing is written into `X4.exe` or any game file; when the game exits, nothing of it remains.
+
+**How (for reviewers):**
+- Injection: `CreateProcessW(CREATE_SUSPENDED)` → `VirtualAllocEx`/`WriteProcessMemory` (the DLL path) →
+  `CreateRemoteThread(LoadLibraryW)`, wait → `ResumeThread`. The game's entry point runs only after the hooks exist.
+- Hooking: the DLL rewrites entries of **X4.exe's own import address table** (IAT) for user32 functions — no code
+  patching, no inline hooks, no third-party hook library. X4.exe 9.00 imports (read with `native\peimports.py`):
+  `CreateWindowExW, RegisterClassExW, SetWindowPos, SetWindowLongPtrW, ShowWindow, AdjustWindowRect,
+  GetMonitorInfoW, MonitorFromWindow, MonitorFromRect, GetSystemMetrics, SystemParametersInfoW/A,
+  EnumDisplaySettingsW/ExW, ChangeDisplaySettingsW/ExW` (plus `EnumDisplayDevicesW, GetClientRect, ClientToScreen,
+  ScreenToClient, ClipCursor, Get/SetCursorPos`, which need no change). It does **not** import `MoveWindow`,
+  `SetWindowPlacement`, `DeferWindowPos`, `SetWindowLongW`, `AdjustWindowRectEx`, `MonitorFromPoint`,
+  `EnumDisplayMonitors` or any DPI function, and their names do not occur anywhere in the exe (so they are not
+  fetched with `GetProcAddress` either). Its manifest declares `dpiAware True/PM`: all coordinates are physical pixels.
+
+| Hook | Effect |
+|---|---|
+| `CreateWindowExW` | top-level window with class or title `X4`: created as a borderless popup at the rectangle |
+| `RegisterClassExW` | class `X4`: the game's window procedure is wrapped; after it ran, `WM_WINDOWPOSCHANGING` is pointed at the rectangle (not when minimising) and `WM_GETMINMAXINFO` allows the size |
+| `SetWindowPos` | the game's own calls for its window are rewritten to the rectangle |
+| `SetWindowLongPtrW` | style changes for its window stay borderless (`WS_CAPTION`/`WS_THICKFRAME`/maximise removed) |
+| `ShowWindow` | maximise becomes "show normal", then the rectangle is re-applied |
+| `AdjustWindowRect` | returns the rectangle unchanged (borderless: window = client) |
+| `GetMonitorInfoW` | for the "anchor" monitor (the real monitor under the rectangle's centre): `rcMonitor` = `rcWork` = the rectangle |
+| `MonitorFromWindow` / `MonitorFromRect` | the game window, or a rectangle containing the anchor's centre → the anchor monitor |
+| `GetSystemMetrics` | screen size = rectangle size; virtual-screen metrics = union of the real desktop and the rectangle |
+| `SystemParametersInfoW/A` | `SPI_GETWORKAREA` = the rectangle |
+| `EnumDisplaySettingsW/ExW` | the anchor's *current/registry* mode reports the rectangle's size and position (the mode list stays real) |
+| `ChangeDisplaySettingsW/ExW` | blocked: never forwarded, so the game cannot change a real display mode |
+
+- A **watchdog** thread (500 ms) puts the window back if something outside the game moves it or adds a frame.
+- What IAT patching cannot see, and why it does not matter here: calls made by other DLLs (Vulkan loader and
+  driver, Steam, Tobii) see the real window — which really is 7280×1440, so the swapchain gets the right size;
+  moves from outside the process are handled by the watchdog.
+- **Configuration** is handed over in environment variables of the game process only (set by the launcher right
+  before it starts the game, read once by the DLL, then deleted). No config file, nothing that outlives the game.
+- **Fail-safe:** invalid rectangle, missing DLL, failed injection, a failure while patching (every slot written so far
+  is put back) or "not the intended process" → the game simply starts as it would without us; the reason is logged.
+  The launcher refuses (starts nothing) for anything that is not an absolute path to an existing `X4.exe`, and while
+  that exe already runs.
+- The DLL writes only `x4c3hook.log` (launcher: `launcher.log`), both in `native\out\`, each capped at 1 MiB. No
+  network, no registry, no autostart, no elevation (`asInvoker` manifest), no Defender exclusions.
+
+**Display mode:** stay in **Windowed** (the existing cockpit values: `fullscreen=false`, `borderless=false`,
+`res_width=7280`, `res_height=1440`). Only Windowed uses `res_width`/`res_height` (Borderless disables the option and
+ignores it, `gameoptions.lua` 7955–7957), and Windowed renders at the client size (measured: 3424×1353 when clamped).
+With the hook the client *is* 7280×1440 and the game sees a 7280×1440 work area, so nothing clamps any more. The
+borderless look comes from the hook, not from the game's Borderless mode. `cockpit.ps1`'s values therefore stay as
+they are; only its closing hint now points to `cockpit-launch`.
+
+**Build** (Zig is the only tool; outputs go to `native\out\`, gitignored):
+
+```bat
+native\build.cmd                       :: zig.exe from -Zig <path>, %X4C3_ZIG%, native\zig.path or PATH
+```
+
+**Use** (game closed):
+
+```bat
+cockpit-on.cmd                                         :: once: cockpit values into config.xml (backup first)
+cockpit-launch.cmd -WhatIf                             :: checks + the exact command, starts nothing
+cockpit-launch.cmd -GameArgs "-debug all -logfile debug.log"
+cockpit-launch.cmd -Rect "-1920,0,7280,1440" -GameArgs "..."   :: explicit rectangle, skips the arrangement check
+```
+
+`cockpit-launch` reads the live monitor topology with the kit's layout code (`triple`), refuses a mismatching
+arrangement (`-Force` or `-Rect` override), checks that cockpit mode is ON (it never edits `config.xml`), refuses
+while the game runs, and starts the launcher **detached** through WMI (`Win32_Process.Create`), so closing the shell
+does not close the game. It then prints the launcher's result line (`hook=ACTIVE` or the fail-safe reason).
+
+**Turn it off:** start the game the normal way (without `cockpit-launch`) — there is nothing to uninstall. For the
+usual config values: close the game, `cockpit-off.cmd`. To remove the native part completely, delete `native\out\`.
+
+**Risks and limits:**
+- A game update can change how X4 creates or enforces its window; then the hook may stop working (the log shows
+  what the game called) or, at worst, the game may crash at start. Start it normally to play.
+- Loading a DLL into another process is a technique malware also uses: anti-virus heuristics may react (an on-demand
+  Defender scan of the three binaries found nothing on 2026-11-22; behaviour monitoring at run time is a separate
+  matter). Never add exclusions for it.
+- HUD and menus stretch over the full width (`menuwidthscale` keeps menus on the centre monitor); the four 1920×180
+  corners above/below the Dells are rendered but invisible; the map may be awkward.
+- If X4 restarts itself through a store client, the new process is not hooked (the launcher logs an early exit).
+- X4 has no anti-cheat; do not use this technique with games that do.
+
+**Credit:** window-redirection idea learned from hubertdungen/x4-triple-screen (MIT); this is an independent
+implementation (own launcher, IAT patching instead of a hook library, own tests). Its source was read, not used.
 
 ## Live test result (2026-11-22)
 
@@ -32,12 +126,19 @@ No driver tricks, no NVIDIA Surround, no injected code, no game files modified.
 | `settings.example.json` | All settings with explanations; copy to `settings.json` |
 | `lib\` | Shared code (settings, monitor/EDID reading, layout maths, text-preserving XML edit, Win32 window calls) |
 | `diag\x4winprobe.ps1` | Window-behaviour probe: `-Experiments` (logged API matrix, puts the window back) / `-Watch` (passive event log) |
+| `cockpit-launch.ps1` / `.cmd` | Start X4 with the native window hook (checks, then the launcher detached via WMI) |
+| `native\launcher.c`, `hook.c`, `x4c3.h` | Launcher (`launcher.exe`) and hook DLL (`x4c3hook.dll`) sources, C, built with Zig |
+| `native\testtarget.c` | `testtarget.exe`: imitates X4's window behaviour through the same imports (for tests) |
+| `native\peimports.py` | Read-only PE import / manifest lister (how the hook set was chosen; re-run after a game update) |
+| `native\build.ps1` / `.cmd` | Reproducible build into `native\out\` |
+| `native\tests\run-native-tests.ps1` / `.cmd` | Native tests (launcher, DLL, cockpit-launch against `testtarget.exe`) |
 | `tests\run-tests.ps1` / `.cmd` | Automated tests (never touch the real game, its window, config or companion) |
 | `TESZT.md` | Step-by-step in-game test protocol (Hungarian) |
 
 ## Requirements
 
 - Windows 10/11, Windows PowerShell 5.1 (built in). No admin rights.
+- Native window hook only: Zig (tested with 0.17.1) to build `native\` — nothing else; Python 3 optional (import audit test).
 - X4: Foundations 9.00 (Vulkan renderer). Steam or GOG.
 - Three monitors, the outer two of the same size; the centre one is the Windows **primary** monitor
   (or set `centreMatch`). The side monitors must be arranged left and right of it in *Windows Settings → System →
@@ -150,7 +251,8 @@ that is already open.
 
 - One flat projection: correct only from one eye point, and only with forward-facing side monitors.
 - The side monitors show the middle 1080 of the 1440 rows; the corners are rendered for nothing.
-- The window must be stretched after every game start (`x4cockpit3.cmd triple`). The game is not modified.
+- External route: the window must be stretched after every game start (`x4cockpit3.cmd triple`) — refused by
+  9.00. Hook route: `cockpit-launch` at every start. In both the game files are not modified.
 - Map content was reported invisible on multi-monitor setups in older versions (4.10–5.10); not checked for 9.00.
 - Distortion correction for angled side monitors (ReShade shader / Vulkan layer) is out of scope.
 
@@ -166,7 +268,26 @@ that is already open.
   settings validation.
 - **C** the real window code on an invisible, non-activating dummy window: exact client rectangles for
   `uw-left-only`, `single` and an over-sized `custom`, `-Restore`, refusal over a mismatching arrangement, and
-  that without `-Handle` only the configured exe can be picked.
+  that without `-Handle` only the configured exe can be picked. (A few C assertions depend on the live monitor
+  arrangement, so the total can differ by one or two between arrangements; failures cannot.)
+
+`native\tests\run-native-tests.cmd [-WorkDir <dir>] [-SkipBuild] [-Visible]` (≈2 minutes; all windows invisible
+and click-through unless `-Visible`, every started process stopped by PID; never starts `X4.exe`):
+
+- **N** build; import audit (no network/registry/shell DLLs; the target imports what X4 imports, same DPI
+  manifest); the target **without** the hook reproduces the clamp (framed window = work area, external
+  `SetWindowPos` refused); **with** the hook at 640×360 and at the real −1920,0 7280×1440: borderless, window =
+  client = rectangle, what the target sees from `GetMonitorInfoW`/`GetSystemMetrics`/`SPI_GETWORKAREA`/
+  `AdjustWindowRect`/`EnumDisplaySettingsW`, `ChangeDisplaySettingsExW` blocked, rectangle kept after external
+  `SetWindowPos` and style changes and after the target's own re-apply timer; the watchdog alone; an `X4.exe`-named
+  copy with game arguments passed through verbatim.
+- **F** missing DLL, wrong exe name, relative/missing exe, four invalid rectangles, invalid rectangle reaching the
+  DLL, simulated hook-install failure (rollback verified from inside the target), simulated injection failure, DLL
+  in the wrong process, unknown/test-only options, exe already running.
+- **L** both logs capped; a log over half its cap starts over next session.
+- **C** `cockpit-launch`: cockpit mode off → refused; target/mismatching arrangement (+`-Force`); `-Rect`; config
+  resolution warning; game already running; a real detached start through WMI (parent of the launcher is
+  `WmiPrvSE.exe`).
 
 ## Licence
 

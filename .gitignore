@@ -3,3 +3,10 @@ settings.json
 state/
 backups/
 tests/_work/
+# native part: build output, test runs, zig caches, the local zig.exe location
+native/out/
+native/tests/_work/
+native/zig.path
+.zig-cache/
+zig-cache/
+zig-out/

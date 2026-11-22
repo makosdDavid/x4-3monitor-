@@ -1,0 +1,24 @@
+#include <windows.h>
+1 RT_MANIFEST "launcher.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "x4cockpit3 launcher (starts X4 with the window-redirection DLL)"
+      VALUE "ProductName", "x4cockpit3 (unofficial fan project)"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "OriginalFilename", "launcher.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
