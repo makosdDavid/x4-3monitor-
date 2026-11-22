@@ -6,9 +6,22 @@ A small Windows PowerShell kit that lets **X4: Foundations 9.00** draw one wide 
 It is the *simple wide window* approach: one game window, one flat projection, a narrower FOV.
 No driver tricks, no NVIDIA Surround, no injected code, no game files modified.
 
-> **Status:** the tools are tested (69 automated tests, see below) but the **in-game behaviour is not verified
-> yet**. Whether X4 accepts and keeps a 7280-pixel-wide window is exactly what step 2–3 of the test protocol
-> (`TESZT.md`, Hungarian) decides.
+> **Status: the simple wide window does NOT work with X4 9.00** (live test 2026-11-22, see "Live test result").
+> The tools stay useful for the arrangement check, the config switch and as building blocks for the routes
+> listed there, but stretching the game window from outside is refused by the game.
+
+## Live test result (2026-11-22)
+
+- Config: Windowed, `res_width` 7280, `res_height` 1440. X4 created a framed window of exactly the primary
+  monitor's **work area** (0,0 3440×1392; client 3424×1353) and rendered at that size (`debug.log`:
+  "Resolution: 3424 x 1353"). `res_width` larger than the screen is silently reduced to the work area.
+- `SetWindowPos` (also with `SWP_NOSENDCHANGING`), and a style change by `SetWindowLongPtr`, all returned
+  success but changed nothing, immediately or 1.5 s later. Dragging the window by hand onto the side monitor did
+  not work either. X4 keeps its window inside the one screen chosen in Options → Display → Screen (`adapter` key).
+- An independent project reports the same clamp ("instead of reverting to a single-display 2560x1392 window") and
+  works around it only by hooking inside X4.exe (github.com/hubertdungen/x4-triple-screen).
+- `diag\x4winprobe.ps1` logs, for each window call, whether the change never happened or happened and was put
+  back (`-Experiments`), and what happens during a hand drag (`-Watch`, passive).
 
 ## What is in the box
 
@@ -18,6 +31,7 @@ No driver tricks, no NVIDIA Surround, no injected code, no game files modified.
 | `cockpit.ps1`, `cockpit-on.cmd`, `cockpit-off.cmd` | Switch the game's `config.xml` into cockpit mode and back (game must be closed) |
 | `settings.example.json` | All settings with explanations; copy to `settings.json` |
 | `lib\` | Shared code (settings, monitor/EDID reading, layout maths, text-preserving XML edit, Win32 window calls) |
+| `diag\x4winprobe.ps1` | Window-behaviour probe: `-Experiments` (logged API matrix, puts the window back) / `-Watch` (passive event log) |
 | `tests\run-tests.ps1` / `.cmd` | Automated tests (never touch the real game, its window, config or companion) |
 | `TESZT.md` | Step-by-step in-game test protocol (Hungarian) |
 

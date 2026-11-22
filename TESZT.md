@@ -1,5 +1,12 @@
 # Hárommonitoros pilótafülke — játékbeli teszt
 
+> **2026-11-22: a 3. lépés elbukott.** Az X4 9.00 a 7280 px helyett az elsődleges monitor munkaterületére
+> (3440×1392) korlátozza az ablakát, és sem programból, sem kézzel nem engedi elmozdítani. Ez a protokoll
+> ebben a formában nem folytatható. Ha a játék fut, a mechanizmus egy lépésben naplózható:
+> `powershell -ExecutionPolicy Bypass -File diag\x4winprobe.ps1 -Watch -Seconds 30` (közben próbáld kézzel
+> elhúzni az ablakot), majd `... diag\x4winprobe.ps1 -Experiments`. **Kérdés:** a naplóban 0 vagy legalább 2
+> „LOCATIONCHANGE” esemény van a hívásoknál? Utána `cockpit-off.cmd` (játék bezárva).
+
 Minden parancsot ebben a mappában futtass (PowerShell: `cd "D:\X4 Foundations Envoy Pack\tools\x4cockpit3"`,
 a parancsok elé `.\`). Minden lépésnél egy kérdésre válaszolj. Ha egy lépés elbukik, ugorj a 12. lépésre.
 

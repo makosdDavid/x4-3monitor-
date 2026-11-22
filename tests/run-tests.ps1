@@ -140,6 +140,12 @@ try {
     Write-Host '  (no source config found - using a synthetic one)'
     [IO.File]::WriteAllText($cfg, "<?xml version=`"1.0`" encoding=`"UTF-8`"?>`r`n<root>`r`n  <!-- graphic options -->`r`n  <fullscreen>true</fullscreen>`r`n  <borderless>false</borderless>`r`n  <fov>1.3333</fov>`r`n  <confinemouse>false</confinemouse>`r`n  <res_width>3440</res_width>`r`n  <res_height>1440</res_height>`r`n</root>`r`n")
   }
+  # The source may already be in cockpit mode: normalise the copy to a typical non-cockpit state first.
+  $c0 = Read-ConfigFile $cfg
+  $pre = Get-ConfigEdit -Text $c0.Text -Values ([ordered]@{ fullscreen = 'false'; borderless = 'true'; res_width = '3440'; res_height = '1440'; fov = '1.3333'; confinemouse = 'false' })
+  $t0 = $pre.NewText
+  if (@(Find-ConfigElement $t0 'menuwidthscale').Count -eq 1) { $t0 = Remove-ElementLine $t0 'menuwidthscale' }
+  if ($t0 -cne $c0.Text) { Write-ConfigFile $cfg $t0 $c0.Bom; Write-Host '  (copy normalised to a non-cockpit state)' }
   $orig = Hash $cfg
   $origBytes = [IO.File]::ReadAllBytes($cfg)
 
@@ -314,6 +320,27 @@ try {
         $r = Invoke-Tool 'x4cockpit3.ps1' @('-Preset', 'single', '-NoActivate', '-SettingsFile', $sf)
         Assert ($r.Code -eq 1 -and $r.Out -match 'no running game window found') 'C5 no -Handle: only the configured exe is eligible (real game ignored)' $r.Out
       } else { Skip 'C5' 'a process matches the fake exe path' }
+
+      $r = Invoke-Tool 'diag\x4winprobe.ps1' @('-Experiments', '-Handle', $hs, '-SettingsFile', $sf, '-LogDir', (Join-Path $run 'probe'))
+      $w = Get-WinInfo $hw
+      Assert ($r.Code -eq 0 -and $r.Out -match 'E4 SetWindowPos target rect -> returned True, call took \d+ ms, CHANGED' -and $w.X -eq $w0.X -and $w.W -eq $w0.W -and $w.Style -eq $w0.Style) 'C6 probe on a cooperative window: E4 changes it, original state put back' $r.Out
+    }
+
+    # a window that enforces its own rectangle/style, like X4 9.00 did in the live test
+    $hf2 = Join-Path $run 'dummy-enforce.hwnd'
+    $dp2 = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $here 'dummywin.ps1')`"", '-HandleFile', "`"$hf2`"", '-Seconds', '90', '-Enforce') -WindowStyle Hidden -PassThru
+    $script:started += $dp2.Id
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while (-not (Test-Path -LiteralPath $hf2) -and $sw.Elapsed.TotalSeconds -lt 30) { Start-Sleep -Milliseconds 200 }
+    if (-not (Test-Path -LiteralPath $hf2)) { Assert $false 'C7 enforcing dummy window started' }
+    else {
+      $hs2 = (Get-Content -LiteralPath $hf2 -Raw).Trim(); $hw2 = ConvertTo-Hwnd $hs2; $e0 = Get-WinInfo $hw2
+      $r = Invoke-Tool 'x4cockpit3.ps1' @('-Preset', 'single', '-Handle', $hs2, '-NoActivate', '-ZBottom', '-SettingsFile', $sf)
+      $w = Get-WinInfo $hw2
+      Assert ($r.Code -eq 3 -and $r.Out -match 'REFUSED BY THE APPLICATION' -and $r.Out -notmatch 'Applied' -and $w.X -eq $e0.X -and $w.W -eq $e0.W -and $w.Style -eq $e0.Style) 'C7 window that keeps its own rect: reported as REFUSED, exit 3' $r.Out
+      Assert (-not (Test-Path -LiteralPath (Get-WindowStatePath $st $hw2))) 'C7 no stale restore state left behind'
+      $r = Invoke-Tool 'diag\x4winprobe.ps1' @('-Experiments', '-Handle', $hs2, '-SettingsFile', $sf, '-LogDir', (Join-Path $run 'probe'))
+      Assert ($r.Code -eq 0 -and $r.Out -match 'E4 SetWindowPos target rect -> returned True, call took \d+ ms, UNCHANGED' -and $r.Out -match 'E8 SetWindowLongPtr[^\n]*UNCHANGED') 'C8 probe on the enforcing window: moves and style change reported UNCHANGED' $r.Out
     }
   }
 } catch {

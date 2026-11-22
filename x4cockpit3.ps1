@@ -154,8 +154,25 @@ try {
   }
   $res = Set-SpanWindow -Hwnd $h -Rect $plan.Rect -Mons $mons -StateDir $settings.stateDir -Popup:$Popup -NoActivate:$NoActivate -ZBottom:$ZBottom -Force:$Force
   foreach ($m in $res.Messages) { Write-Host "($m)" }
-  Write-Host (Fmt 'Applied. requested ({0},{1}) {2}x{3} | window ({4},{5}) {6}x{7} | client ({8},{9}) {10}x{11} | style 0x{12:X} -> 0x{13:X}' $plan.Rect.X $plan.Rect.Y $plan.Rect.W $plan.Rect.H $res.After.X $res.After.Y $res.After.W $res.After.H $res.After.ClientX $res.After.ClientY $res.After.ClientW $res.After.ClientH $res.Before.Style $res.After.Style)
-  if ($res.Exact) { Write-Host 'OK: the client area is exactly the requested rectangle.' } else { Write-Host '! the client area is NOT exactly the requested rectangle (Windows or the application limited it).'; exit 3 }
+  Start-Sleep -Milliseconds 1000   # an application that enforces its own rectangle may put the window back shortly after
+  $b = $res.Before; $a = Get-WinInfo $h; $r = $plan.Rect
+  Write-Host (Fmt 'requested client ({0},{1}) {2}x{3}' $r.X $r.Y $r.W $r.H)
+  Write-Host (Fmt 'before  : window ({0},{1}) {2}x{3}, client ({4},{5}) {6}x{7}, style 0x{8:X}' $b.X $b.Y $b.W $b.H $b.ClientX $b.ClientY $b.ClientW $b.ClientH $b.Style)
+  Write-Host (Fmt 'at once : window ({0},{1}) {2}x{3}, client ({4},{5}) {6}x{7}, style 0x{8:X}' $res.After.X $res.After.Y $res.After.W $res.After.H $res.After.ClientX $res.After.ClientY $res.After.ClientW $res.After.ClientH $res.After.Style)
+  Write-Host (Fmt 'after 1s: window ({0},{1}) {2}x{3}, client ({4},{5}) {6}x{7}, style 0x{8:X}' $a.X $a.Y $a.W $a.H $a.ClientX $a.ClientY $a.ClientW $a.ClientH $a.Style)
+  $exactNow = ($a.ClientX -eq $r.X -and $a.ClientY -eq $r.Y -and $a.ClientW -eq $r.W -and $a.ClientH -eq $r.H)
+  $same = ($a.X -eq $b.X -and $a.Y -eq $b.Y -and $a.W -eq $b.W -and $a.H -eq $b.H -and $a.Style -eq $b.Style)
+  if ($exactNow) { Write-Host 'OK: the client area is exactly the requested rectangle.' }
+  elseif ($same -and -not $res.Exact -and ($res.After.X -eq $b.X -and $res.After.W -eq $b.W -and $res.After.Style -eq $b.Style)) {
+    Write-Host 'REFUSED BY THE APPLICATION: the window did not move, resize or change style at all (the calls returned success, the application kept its own rectangle).'
+    Write-Host '  X4 9.00 keeps its window inside the screen selected in its own settings - see README "Live test result". Nothing was changed.'
+    Remove-Item -LiteralPath $res.StatePath -ErrorAction SilentlyContinue
+    exit 3
+  } elseif ($same) {
+    Write-Host 'REFUSED BY THE APPLICATION: the window changed and was put back within 1 s.'
+    Remove-Item -LiteralPath $res.StatePath -ErrorAction SilentlyContinue
+    exit 3
+  } else { Write-Host '! PARTLY: the client area is NOT the requested rectangle (Windows or the application limited it).'; exit 3 }
   $hint = ''; if ($Handle) { $hint = " -Handle $Handle" }
   Write-Host "Undo: .\x4cockpit3.ps1 -Restore$hint   (saved: $($res.StatePath))"
   exit 0
