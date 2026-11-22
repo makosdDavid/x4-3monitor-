@@ -10,3 +10,5 @@ native/zig.path
 .zig-cache/
 zig-cache/
 zig-out/
+# diagnostic run logs
+diag/*.log
