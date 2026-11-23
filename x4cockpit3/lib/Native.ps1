@@ -29,8 +29,43 @@ namespace X4Cockpit3 {
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
     public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
     public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight; }
-  public class Mon { public string Device; public int X, Y, W, H; public bool Primary; public string Interface; public int Hz; }
+  // Children = the monitor devices EnumDisplayDevices lists under this display, one "flags<TAB>device path" per entry.
+  // QdcPath / QdcName = monitorDevicePath / monitorFriendlyDeviceName of the ACTIVE QueryDisplayConfig path whose
+  // source is this display (the authoritative display -> monitor mapping). Interface is chosen in PowerShell.
+  public class Mon { public string Device; public int X, Y, W, H; public bool Primary; public string Interface; public int Hz;
+    public List<string> Children = new List<string>(); public string QdcPath = ""; public string QdcName = ""; public int QdcTech = -1; }
   public static class Native {
+    [DllImport("user32.dll")] static extern int GetDisplayConfigBufferSizes(uint flags, out uint numPaths, out uint numModes);
+    [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint numPaths, byte[] paths, ref uint numModes, byte[] modes, IntPtr topologyId);
+    [DllImport("user32.dll")] static extern int DisplayConfigGetDeviceInfo(byte[] packet);
+    static string WStr(byte[] b, int off, int bytes) {
+      var s = Encoding.Unicode.GetString(b, off, bytes); int z = s.IndexOf('\0'); return z >= 0 ? s.Substring(0, z) : s; }
+    // GDI device name (\\.\DISPLAYn) -> { monitorDevicePath, friendly name, output technology } for every active path.
+    // Read-only (QDC_ONLY_ACTIVE_PATHS). Layouts: DISPLAYCONFIG_PATH_INFO 72 bytes, MODE_INFO 64 bytes,
+    // SOURCE_DEVICE_NAME 84 bytes (type 1), TARGET_DEVICE_NAME 420 bytes (type 2).
+    public static Dictionary<string, string[]> DisplayConfigTargets() {
+      var map = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+      uint np, nm;
+      if (GetDisplayConfigBufferSizes(2, out np, out nm) != 0 || np == 0) return map;
+      var paths = new byte[np * 72]; var modes = new byte[nm * 64];
+      if (QueryDisplayConfig(2, ref np, paths, ref nm, modes, IntPtr.Zero) != 0) return map;
+      for (int i = 0; i < np; i++) {
+        int o = i * 72;
+        if ((BitConverter.ToUInt32(paths, o + 68) & 1) == 0) continue;            // DISPLAYCONFIG_PATH_ACTIVE
+        var src = new byte[84];
+        BitConverter.GetBytes(1).CopyTo(src, 0); BitConverter.GetBytes(84).CopyTo(src, 4);
+        Array.Copy(paths, o + 0, src, 8, 12);                                       // adapterId (8) + source id (4)
+        if (DisplayConfigGetDeviceInfo(src) != 0) continue;
+        string gdi = WStr(src, 20, 64);
+        var tgt = new byte[420];
+        BitConverter.GetBytes(2).CopyTo(tgt, 0); BitConverter.GetBytes(420).CopyTo(tgt, 4);
+        Array.Copy(paths, o + 20, tgt, 8, 12);                                      // target adapterId + target id
+        if (DisplayConfigGetDeviceInfo(tgt) != 0) continue;
+        if (!map.ContainsKey(gdi))                                                  // clone mode: the first target wins
+          map[gdi] = new string[] { WStr(tgt, 164, 256), WStr(tgt, 36, 128), BitConverter.ToInt32(tgt, 24).ToString() };
+      }
+      return map;
+    }
     delegate bool MonitorEnumProc(IntPtr hMon, IntPtr hdc, IntPtr lprc, IntPtr data);
     delegate bool WndEnumProc(IntPtr h, IntPtr l);
     [DllImport("user32.dll")] static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc cb, IntPtr data);
@@ -54,14 +89,23 @@ namespace X4Cockpit3 {
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr ctx);
     public static List<Mon> Monitors() {
       var list = new List<Mon>();
+      Dictionary<string, string[]> qdc;
+      try { qdc = DisplayConfigTargets(); } catch { qdc = new Dictionary<string, string[]>(); }
       EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (h, dc, r, d) => {
         var mi = new MONITORINFOEX(); mi.cbSize = Marshal.SizeOf(typeof(MONITORINFOEX));
         if (GetMonitorInfoW(h, ref mi)) {
           var m = new Mon { Device = mi.szDevice, X = mi.rcMonitor.Left, Y = mi.rcMonitor.Top,
             W = mi.rcMonitor.Right - mi.rcMonitor.Left, H = mi.rcMonitor.Bottom - mi.rcMonitor.Top,
             Primary = (mi.dwFlags & 1) != 0 };
-          var dd = new DISPLAY_DEVICE(); dd.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
-          if (EnumDisplayDevicesW(mi.szDevice, 0, ref dd, 1)) m.Interface = dd.DeviceID; // EDD_GET_DEVICE_INTERFACE_NAME
+          // Every monitor device listed under this display (index 0 is NOT necessarily the one showing it: an
+          // inactive panel can be listed first under every display - seen 2026-11-23 with the laptop panel off).
+          for (uint i = 0; i < 16; i++) {
+            var dd = new DISPLAY_DEVICE(); dd.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+            if (!EnumDisplayDevicesW(mi.szDevice, i, ref dd, 1)) break;              // EDD_GET_DEVICE_INTERFACE_NAME
+            m.Children.Add(dd.StateFlags + "\t" + dd.DeviceID);
+          }
+          string[] t;
+          if (qdc.TryGetValue(mi.szDevice, out t)) { m.QdcPath = t[0]; m.QdcName = t[1]; int tech; if (int.TryParse(t[2], out tech)) m.QdcTech = tech; }
           var dm = new DEVMODE(); dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
           if (EnumDisplaySettingsW(mi.szDevice, -1, ref dm)) m.Hz = dm.dmDisplayFrequency; // ENUM_CURRENT_SETTINGS
           list.Add(m);
@@ -113,18 +157,38 @@ function Get-EdidInfo([string]$Interface) {
   return $info
 }
 
+function Select-MonitorInterface {
+  # Which monitor device shows a display (\\.\DISPLAYn)? Pure function (tested with today's real data).
+  #   1. the monitorDevicePath of the active QueryDisplayConfig path whose source is that display (authoritative);
+  #   2. else the first EnumDisplayDevices child with DISPLAY_DEVICE_ACTIVE (0x1) - NOT simply child 0: an inactive
+  #      monitor (flags 0x2, e.g. a disabled laptop panel) can be listed first under every display;
+  #   3. else the first child at all (old behaviour, last resort).
+  # $Children: objects with Flags (int) and Id (device interface path). Returns { Path; Source = qdc|active|first|none }.
+  param([string]$QdcPath, $Children)
+  if ($QdcPath -and $QdcPath -match '^\\\\\?\\DISPLAY#') { return [pscustomobject]@{ Path = $QdcPath; Source = 'qdc' } }
+  $kids = @($Children | Where-Object { $_ -and $_.Id })
+  $a = @($kids | Where-Object { ([int]$_.Flags -band 1) -ne 0 }) | Select-Object -First 1
+  if ($a) { return [pscustomobject]@{ Path = $a.Id; Source = 'active' } }
+  if ($kids.Count -gt 0) { return [pscustomobject]@{ Path = $kids[0].Id; Source = 'first' } }
+  return [pscustomobject]@{ Path = ''; Source = 'none' }
+}
+
 function Get-LiveMonitors {
   $out = @()
   foreach ($m in [X4Cockpit3.Native]::Monitors()) {
-    $edid = Get-EdidInfo $m.Interface
+    $kids = @($m.Children | ForEach-Object { $a = $_ -split "`t", 2; [pscustomobject]@{ Flags = [int]$a[0]; Id = $a[1] } })
+    $sel = Select-MonitorInterface -QdcPath $m.QdcPath -Children $kids
+    $edid = Get-EdidInfo $sel.Path
     $code = '?'; $name = ''; $wmm = 0; $hmm = 0
     if ($edid) { $code = $edid.Code; $name = $edid.Name; $wmm = $edid.WidthMm; $hmm = $edid.HeightMm }
+    if (-not $name -and $m.QdcName) { $name = $m.QdcName }   # the driver's friendly name (also from the EDID)
     $pitch = 0.0
     if ($wmm -gt 0) { $pitch = [Math]::Round($wmm / [double]$m.W, 4) }
     $out += [pscustomobject]@{
       Device = $m.Device; Name = $name; Code = $code; Primary = $m.Primary
       X = $m.X; Y = $m.Y; W = $m.W; H = $m.H; Hz = $m.Hz
       WidthMm = $wmm; HeightMm = $hmm; PitchMm = $pitch
+      MonitorPath = $sel.Path; PathSource = $sel.Source
     }
   }
   return $out

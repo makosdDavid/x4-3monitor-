@@ -15,6 +15,15 @@ function ConvertTo-InvString($v) {
   return [Convert]::ToString($v, $script:Inv)
 }
 
+function Write-X4Json($Object) {
+  # Machine-readable result for callers (e.g. the x4switch manager): ONE line "@@X4JSON {...}" on stdout, after the
+  # human-readable lines. Compact JSON with every non-ASCII character escaped (\uXXXX), so the line survives any
+  # console code page of a redirected Windows PowerShell 5.1.
+  $j = ConvertTo-Json -InputObject $Object -Depth 8 -Compress
+  $j = [regex]::Replace($j, '[^\x00-\x7F]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
+  Write-Host ('@@X4JSON ' + $j)
+}
+
 # Keys the config switcher is allowed to write. Anything else in "cockpit" is rejected.
 $script:AllowedCockpitKeys = @('fullscreen', 'borderless', 'res_width', 'res_height', 'fov', 'menuwidthscale', 'confinemouse')
 

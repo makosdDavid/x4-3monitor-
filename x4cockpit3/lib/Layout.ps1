@@ -39,6 +39,31 @@ function Test-VOverlap($a, $b) { return (([Math]::Min($a.Y + $a.H, $b.Y + $b.H) 
 function Test-LeftOf($m, $c) { return ((($m.X + $m.W) -eq $c.X) -and (Test-VOverlap $m $c)) }
 function Test-RightOf($m, $c) { return (($m.X -eq ($c.X + $c.W)) -and (Test-VOverlap $m $c)) }
 
+function Test-IdentityUnreliable($m, $Mons) {
+  # The EDID identity of a monitor cannot be trusted when it is missing (no name and no code), or when the same
+  # code is reported for monitors of different pixel sizes (one EDID attached to several displays - the
+  # 2026-11-23 symptom of reading the wrong monitor device).
+  if (-not $m.Name -and (-not $m.Code -or $m.Code -eq '?')) { return $true }
+  if (-not $m.Code -or $m.Code -eq '?') { return $false }
+  return (@(@($Mons) | Where-Object { $_.Device -ne $m.Device -and $_.Code -eq $m.Code -and ($_.W -ne $m.W -or $_.H -ne $m.H) }).Count -gt 0)
+}
+
+function Get-GeometricSides($Mons, $Centre, $Sides) {
+  # Fallback when the side monitors cannot be recognised by EDID: exactly one monitor directly left and one directly
+  # right of the (larger) centre monitor, both of the same pixel size and smaller than the centre one, each either
+  # matching sideMatch already or of unreliable identity. Returns @(left, right) or $null.
+  $mons = @($Mons)
+  $l = @($mons | Where-Object { $_.Device -ne $Centre.Device -and (Test-LeftOf $_ $Centre) })
+  $r = @($mons | Where-Object { $_.Device -ne $Centre.Device -and (Test-RightOf $_ $Centre) })
+  if ($l.Count -ne 1 -or $r.Count -ne 1) { return $null }
+  $l = $l[0]; $r = $r[0]
+  if ($l.W -ne $r.W -or $l.H -ne $r.H) { return $null }
+  if (($l.W * $l.H) -ge ($Centre.W * $Centre.H) -or $l.H -gt $Centre.H) { return $null }
+  $sideDevs = @(@($Sides) | ForEach-Object { $_.Device })
+  foreach ($m in $l, $r) { if ($sideDevs -notcontains $m.Device -and -not (Test-IdentityUnreliable $m $mons)) { return $null } }
+  return @($l, $r)
+}
+
 function Get-SideTarget($Side, $Centre, [string]$Where) {
   $y = $Centre.Y + [int][Math]::Round(($Centre.H - $Side.H) / 2.0)
   if ($Where -eq 'left') { $x = $Centre.X - $Side.W } else { $x = $Centre.X + $Centre.W }
@@ -115,6 +140,17 @@ function Get-CockpitPlan {
       }
     }
     'triple' {
+      $hasL = @($sides | Where-Object { Test-LeftOf $_ $c }).Count -gt 0
+      $hasR = @($sides | Where-Object { Test-RightOf $_ $c }).Count -gt 0
+      if (-not ($hasL -and $hasR)) {
+        $g = Get-GeometricSides $mons $c $sides
+        if ($g) {
+          $why = @($g | Where-Object { @($sides | ForEach-Object { $_.Device }) -notcontains $_.Device } | ForEach-Object { Get-MonitorLabel $_ }) -join '; '
+          $plan.Notes += "Side monitors recognised by geometry (one larger centre monitor with two equal smaller monitors directly left and right): the EDID name/code of $why is missing or unreliable, so sideMatch '$($Settings.sideMatch)' could not be checked."
+          $sides = @(@($sides | Where-Object { $_.Device -ne $g[0].Device -and $_.Device -ne $g[1].Device }) + $g)
+          $others = @($others | Where-Object { $_.Device -ne $g[0].Device -and $_.Device -ne $g[1].Device })
+        }
+      }
       $l = @($sides | Where-Object { Test-LeftOf $_ $c }) | Select-Object -First 1
       $r = @($sides | Where-Object { (Test-RightOf $_ $c) -and (-not $l -or $_.Device -ne $l.Device) }) | Select-Object -First 1
       $plan.Left = $l; $plan.Right = $r

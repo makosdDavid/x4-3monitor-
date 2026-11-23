@@ -1,0 +1,21 @@
+{
+  "_comment": "Copy to settings.json (machine-local, gitignored) or just start X4Switch.exe: it creates settings.json itself when you pick a mode or change Settings. Every key is optional; an empty string means auto-detect / default.",
+  "language": "",
+  "_language": "'' = the Windows UI language (Hungarian -> hu, anything else -> en), 'en' or 'hu'.",
+  "lastMode": "cockpit",
+  "_lastMode": "The choice selected when the window opens: 'cockpit' or 'single'. Remembered automatically.",
+  "gameExe": "",
+  "_gameExe": "Full path of X4.exe. '' = <this folder>\\..\\..\\X4.exe.",
+  "gameArgs": "",
+  "_gameArgs": "Arguments for X4.exe in both modes, e.g. -debug all -logfile debug.log. '' = none.",
+  "rect": "",
+  "_rect": "Cockpit window rectangle 'x,y,w,h' (e.g. -1920,0,7280,1440). '' = computed from the live monitor arrangement (recommended).",
+  "closeAfterStart": false,
+  "cockpitDir": "",
+  "_cockpitDir": "The x4cockpit3 kit. '' = <this folder>\\..\\x4cockpit3.",
+  "companionDir": "",
+  "_companionDir": "The X4 Companion (browser dashboard). '' = <this folder>\\..\\x4companion. Missing = single monitor without dashboard.",
+  "dashboardPort": 0,
+  "_dashboardPort": "0 = the port in the companion's state\\watcher.json, else 8788.",
+  "_advanced": "Normally unset (used by the tests): cockpitSettingsFile, monitorsJson, cockpitLogDir, companionStateDir, companionLogDir, companionMutex, powershellExe, launchWaitSeconds (30), dashboardWaitSeconds (30)."
+}

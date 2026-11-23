@@ -1,0 +1,11 @@
+# machine-local
+settings.json
+settings.json.tmp
+logs/
+zig.path
+# build output (build.cmd recreates it)
+X4Switch.exe
+X4Switch.pdb
+*.lib
+# test runs
+tests/_work/

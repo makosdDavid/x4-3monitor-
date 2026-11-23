@@ -344,6 +344,14 @@ try {
   Assert ($c.Code -eq 0 -and $c.Out -match 'forced') 'C3 -Force: accepted (WhatIf)' $c.Out
   $c = CL @('-WhatIf', '-SettingsFile', $sf, '-Rect', '-1920,0,7280,1440')
   Assert ($c.Code -eq 0 -and $c.Out -match 'from -Rect') 'C4 -Rect override' $c.Out
+  # -Json contract (x4switch manager): one "@@X4JSON {...}" line
+  function JL($out) { $l = @($out -split "`r?`n" | Where-Object { $_ -like '@@X4JSON *' }) | Select-Object -Last 1; if (-not $l) { return $null }; return ($l.Substring(9) | ConvertFrom-Json) }
+  $c = CL @('-WhatIf', '-Json', '-SettingsFile', $sf, '-MonitorsJson', $topoOk, '-GameArgs', '-debug all -logfile debug.log'); $j = JL $c.Out
+  Assert ($c.Code -eq 0 -and $j.result -eq 'whatif' -and $j.rectSource -eq 'layout' -and $j.rect.x -eq -1920 -and $j.rect.w -eq 7280 -and $j.command -match ' -- -debug all -logfile debug\.log$') 'C4j -Json WhatIf: result, rect from the layout, command' $c.Out
+  $c = CL @('-WhatIf', '-Json', '-SettingsFile', $sf, '-MonitorsJson', $topoBad); $j = JL $c.Out
+  Assert ($c.Code -eq 2 -and $j.result -eq 'refused-layout' -and @($j.problems).Count -ge 1) 'C4j -Json mismatching arrangement: refused-layout with the problems' $c.Out
+  $c = CL @('-WhatIf', '-Json', '-SettingsFile', $sf, '-Rect', '1,2,3'); $j = JL $c.Out
+  Assert ($c.Code -eq 2 -and $j.result -eq 'refused-rect') 'C4j -Json invalid -Rect: refused-rect' $c.Out
   $c = CL @('-WhatIf', '-SettingsFile', $sf, '-Rect', '1,2,3')
   Assert ($c.Code -eq 2) 'C4 invalid -Rect: refused' $c.Out
   $c = CL @('-WhatIf', '-SettingsFile', $sf, '-Rect', '64,64,640,360')
@@ -356,9 +364,11 @@ try {
   # (\" : Windows PowerShell 5.1 does not escape quotes inside an argument for a native program, so do it here)
   $cdir = Join-Path $run 'c6-detached'; New-Item -ItemType Directory -Force -Path $cdir | Out-Null
   $ctl = Join-Path $cdir 'target.log'
-  $c = CL @('-SettingsFile', $sf, '-Rect', '64,64,640,360', '-LogDir', $cdir, '-GameArgs', "--hidden --seconds 10 --log \`"$ctl\`"")
+  $c = CL @('-Json', '-SettingsFile', $sf, '-Rect', '64,64,640,360', '-LogDir', $cdir, '-GameArgs', "--hidden --seconds 10 --log \`"$ctl\`"")
   $t = Wait-Target $ctl
   Assert ($c.Code -eq 0 -and $c.Out -match 'hook=ACTIVE') 'C6 cockpit-launch: launcher started detached, hook ACTIVE' $c.Out
+  $j = JL $c.Out
+  Assert ($j.result -eq 'active' -and $j.gamePid -gt 0 -and $j.launcherPid -gt 0 -and $j.hookLine -match 'hook=ACTIVE' -and (-not $t -or $j.gamePid -eq $t.Pid)) 'C6j -Json: active, game pid = the started target' $c.Out
   if ($t) {
     Assert (IsExact (Get-WinInfo $t.Hwnd) 64 64 640 360) 'C6 window at the rectangle'
     $lp = [int]([regex]::Match($c.Out, 'detached \(pid (\d+)\)').Groups[1].Value)

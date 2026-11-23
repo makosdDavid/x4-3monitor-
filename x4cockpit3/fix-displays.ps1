@@ -27,6 +27,7 @@ param(
     [switch]$Swap,
     [switch]$UwSafe,                 # ultrawide on the dock: skip 3440x1440 and use the lighter 2560x1080@60 signal
     [switch]$NoLaptop,               # switch the laptop's own panel off: frees one of the graphics card's four outputs
+    [switch]$Rekick,                 # dock monitors dark although Windows sends a signal (seen after hibernate): take them off and bring them back
     [string]$LeftDell = 'DELD05F',   # only used when both Dells hang on the dock: the one fed over DVI is the left one (the owner said so)
     [string]$SideMode = '',          # e.g. 1280x720: upper limit for BOTH side monitors, when the dock link is too slow for 2x 1920x1080
     [int]$KeepSeconds = 20
@@ -54,7 +55,7 @@ if (-not $WhatIf) {
     $script:busy.Size = New-Object System.Drawing.Size(420, 110)
     $script:busy.Location = New-Object System.Drawing.Point(($ps.X + [int](($ps.Width - 420) / 2)), ($ps.Y + 60))
     $bl = New-Object System.Windows.Forms.Label; $bl.SetBounds(20, 20, 370, 40); $bl.Font = New-Object System.Drawing.Font('Segoe UI', 12)
-    $bl.Text = $(if ($Revert) { 'Elozo beallitas visszaallitasa...' } elseif ($NoLaptop) { 'Laptop kijelzo KI, monitorok beallitasa...' } else { 'Laptop kijelzo BE, monitorok beallitasa...' })
+    $bl.Text = $(if ($Revert) { 'Elozo beallitas visszaallitasa...' } elseif ($Rekick) { 'Oldalso monitorok ujrainditasa...' } elseif ($NoLaptop) { 'Laptop kijelzo KI, monitorok beallitasa...' } else { 'Laptop kijelzo BE, monitorok beallitasa...' })
     $script:busy.Controls.Add($bl); $script:busy.Show(); [System.Windows.Forms.Application]::DoEvents()
 }
 function Close-Busy { if ($script:busy) { $script:busy.Close(); $script:busy.Dispose(); $script:busy = $null } }
@@ -232,6 +233,21 @@ if ($NoLaptop) {
 # the state to go back to, taken BEFORE anything is switched on
 $lapWasOn = [bool](@($outs | Where-Object { $_.Role -eq 'laptop' }).Count)
 $prevBefore = @($outs | ForEach-Object { [pscustomobject]@{ Dev = $_.Dev; Code = $_.Code; W = $_.W; H = $_.H; Hz = $_.Hz; X = $_.X; Y = $_.Y; Primary = ($_.X -eq 0 -and $_.Y -eq 0) } })
+if ($Rekick) {
+    # Seen after waking from hibernate: Windows keeps sending both dock monitors their signal, but the monitors
+    # report standby and stay dark. Taking them off the desktop and bringing them back makes the driver set
+    # their streams up from scratch.
+    $kick = @($outs | Where-Object { $_.Role -eq 'dell' -and $_.Via -eq 'dock' })
+    if (-not $kick.Count) { Say 'rekick: no dock monitor is part of the desktop' }
+    elseif ($WhatIf) { Say ('WhatIf: would take off and bring back: ' + (($kick | ForEach-Object { "$($_.Dev -replace '\\\\\.\\','') ($($_.Code))" }) -join ', ')) }
+    else {
+        foreach ($o in $kick) { $d = [DispFix]::Detach($o.Dev); Say ("rekick: taking " + ($o.Dev -replace '\\\\\.\\', '') + " ($($o.Code)) off: stage code $d") }
+        $c = [DispFix]::Commit(); Say "rekick: commit $c"
+        Start-Sleep -Seconds 6
+        $wanted = $outs.Count; $outs = @(Get-Outputs); $needExtend = $true
+        Say ("rekick: part of the desktop now: " + $outs.Count + ", bringing the dock monitors back")
+    }
+}
 if ($needExtend) {
     if ($WhatIf) { $r = [DispTopo]::Enable((-not $NoLaptop), $true, $true) -split '\|', 2; Say ("WhatIf: $($r[1]) -> " + $(if ($r[0] -eq '0') { 'accepted' } else { "refused (code $($r[0]))" }) + ' (nothing is changed)') }
     else {

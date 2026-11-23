@@ -25,8 +25,14 @@
 param(
   [Parameter(Position = 0)][ValidateSet('on', 'off', 'status')][string]$Mode = 'status',
   [switch]$WhatIf,
-  [string]$SettingsFile = ''
+  [string]$SettingsFile = '',
+  [switch]$Json
 )
+# -Json: after the normal text, one line "@@X4JSON " + compact JSON (for the x4switch manager):
+#   { tool:"cockpit", action, result, exit, whatIf, configPath, mode:"on"|"off", since, gameRunning, gamePids[],
+#     valuesMatch, mismatch[], values{key:{now,cockpit}}, flag, flagPresent, changed, backup, message }
+#   result: status -> "on"|"off" ; on -> "on" ; off -> "off" | "already-off" (exit 2) ; -WhatIf -> "whatif" ;
+#           "refused-game-running" | "refused-profile-mismatch" | "error".   Exit codes unchanged (0 / 2 / 1).
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'lib\Common.ps1')
@@ -62,6 +68,16 @@ function Write-Diff([string]$OldText, $Rows) {
   }
 }
 
+$J = [ordered]@{ tool = 'cockpit'; action = $Mode; result = ''; exit = 0; whatIf = [bool]$WhatIf; configPath = ''; mode = ''; since = ''
+  gameRunning = $false; gamePids = @(); valuesMatch = $false; mismatch = @(); values = [ordered]@{}; flag = ''; flagPresent = $false
+  changed = 0; backup = ''; message = '' }
+function Done([int]$Code, [string]$Result, [string]$Message = '') {
+  $J.exit = $Code; $J.result = $Result; if ($Message) { $J.message = $Message }
+  if ($J.flag) { $J.flagPresent = [bool](Test-Path -LiteralPath $J.flag) }
+  if ($Json) { Write-X4Json $J }
+  exit $Code
+}
+
 try {
   $settings = Read-CockpitSettings -ToolRoot $here -SettingsFile $SettingsFile
   $cfgPath = Resolve-ConfigPath $settings
@@ -79,25 +95,34 @@ try {
   $modeTxt = 'OFF (no saved state)'
   if ($state) { $modeTxt = "ON since $($state.createdLocal) (state: $statePath)" }
   Write-Host "mode   : $modeTxt"
+  $J.configPath = $cfgPath; $J.flag = [string]$flag
+  $J.gameRunning = ($game.Count -gt 0); $J.gamePids = @($game | ForEach-Object { [int]$_.Id })
+  $J.mode = $(if ($state) { 'on' } else { 'off' }); if ($state) { $J.since = [string]$state.createdLocal }
 
   $cfg = Read-ConfigFile $cfgPath
+  $mis = @()
+  foreach ($k in $settings.cockpit.Keys) {
+    $e = @(Find-ConfigElement $cfg.Text $k)
+    $cur = '(absent)'; if ($e.Count -ge 1) { $cur = $e[0].Value }
+    $J.values[$k] = [ordered]@{ now = $cur; cockpit = [string]$settings.cockpit[$k] }
+    if ($cur -ne [string]$settings.cockpit[$k]) { $mis += $k }
+  }
+  $J.mismatch = $mis; $J.valuesMatch = ($mis.Count -eq 0)
 
   if ($Mode -eq 'status') {
     foreach ($k in $settings.cockpit.Keys) {
-      $e = @(Find-ConfigElement $cfg.Text $k)
-      $cur = '(absent)'; if ($e.Count -ge 1) { $cur = $e[0].Value }
-      Write-Host (Fmt '  {0,-15} now {1,-8} cockpit {2}' $k $cur $settings.cockpit[$k])
+      Write-Host (Fmt '  {0,-15} now {1,-8} cockpit {2}' $k $J.values[$k].now $settings.cockpit[$k])
     }
     if ($flag) { Write-Host "companion flag: $flag - $(if (Test-Path -LiteralPath $flag) { 'present' } else { 'absent' })" }
     Show-Companion $settings
-    exit 0
+    Done 0 $J.mode
   }
 
   if ($game.Count -gt 0) {
     if ($WhatIf) { Write-Host '(the game is running: a real run would be refused - the game rewrites config.xml when it exits)' }
     else {
       Write-Host "REFUSED: the game is running (pid $(($game | ForEach-Object { $_.Id }) -join ', ')). Close X4 first - it rewrites config.xml when it exits."
-      exit 2
+      Done 2 'refused-game-running' 'the game is running'
     }
   }
 
@@ -111,14 +136,14 @@ try {
     Write-Host "cockpit-on: $n of $($values.Count) value(s) to change:"
     Write-Diff $cfg.Text $rows
     if ($state) { Write-Host "(already ON: the originals saved on $($state.createdLocal) are kept; this run only re-applies the cockpit values)" }
-    if ($WhatIf) { Write-Host 'WhatIf: nothing written.'; exit 0 }
+    if ($WhatIf) { Write-Host 'WhatIf: nothing written.'; $J.changed = $n; Done 0 'whatif' }
     $problems = @(Test-ConfigValues $edit.NewText $values)
     if ($problems.Count) { throw "the edited text does not verify: $($problems -join '; ')" }
     if ($n -gt 0) {
       New-Item -ItemType Directory -Force -Path $settings.backupDir | Out-Null
       $bk = Get-UniqueBackupPath $settings.backupDir 'before-cockpit-on'
       [IO.File]::WriteAllBytes($bk, $cfg.Bytes)
-      Write-Host "backup : $bk"
+      Write-Host "backup : $bk"; $J.backup = $bk
       Write-ConfigFile $cfgPath $edit.NewText $cfg.Bom
       $check = Read-ConfigFile $cfgPath
       $problems = @(Test-ConfigValues $check.Text $values)
@@ -156,7 +181,7 @@ try {
     Show-Companion $settings
     Write-Host ''
     Write-Host 'Cockpit mode is ON. Next: start the game with  cockpit-launch.cmd -GameArgs "<your usual X4 arguments>"  (native window hook; see README).'
-    exit 0
+    $J.changed = $n; $J.mode = 'on'; $J.valuesMatch = $true; $J.mismatch = @(); Done 0 'on'
   }
 
   # ---- off
@@ -165,11 +190,11 @@ try {
     if ($flag -and (Test-Path -LiteralPath $flag)) {
       if ($WhatIf) { Write-Host "WhatIf: would remove the stale companion flag $flag" } else { Remove-Item -LiteralPath $flag; Write-Host "removed stale companion flag $flag" }
     }
-    exit 2
+    Done 2 'already-off' 'cockpit mode is not on'
   }
   if (-not [string]::Equals([IO.Path]::GetFullPath($state.configPath), [IO.Path]::GetFullPath($cfgPath), [StringComparison]::OrdinalIgnoreCase)) {
     Write-Host "REFUSED: the saved state belongs to $($state.configPath), but the current profile config is $cfgPath. Set profileDir in settings.json."
-    exit 2
+    Done 2 'refused-profile-mismatch' 'the saved state belongs to another profile'
   }
   $saved = @($state.changes | ForEach-Object { [pscustomobject]@{ Key = $_.key; Existed = [bool]$_.existed; OldRaw = $_.oldRaw } })
   $res = Get-ConfigRestore -Text $cfg.Text -Saved $saved
@@ -177,20 +202,20 @@ try {
   $n = @($res.Changes | Where-Object { $_.Changed }).Count
   Write-Host "cockpit-off: $n element(s) to restore:"
   Write-Diff $cfg.Text $rows
-  if ($WhatIf) { Write-Host 'WhatIf: nothing written.'; exit 0 }
+  if ($WhatIf) { Write-Host 'WhatIf: nothing written.'; $J.changed = $n; Done 0 'whatif' }
   try { $x = New-Object Xml.XmlDocument; $x.LoadXml($res.NewText) } catch { throw "restored text is not well-formed XML: $($_.Exception.Message)" }
   if ($n -gt 0) {
     New-Item -ItemType Directory -Force -Path $settings.backupDir | Out-Null
     $bk = Get-UniqueBackupPath $settings.backupDir 'before-cockpit-off'
     [IO.File]::WriteAllBytes($bk, $cfg.Bytes)
-    Write-Host "backup : $bk"
+    Write-Host "backup : $bk"; $J.backup = $bk
     Write-ConfigFile $cfgPath $res.NewText $cfg.Bom
   }
   Remove-Item -LiteralPath $statePath
   if ($flag -and (Test-Path -LiteralPath $flag)) { Remove-Item -LiteralPath $flag; Write-Host "flag   : removed $flag" }
   Write-Host 'Cockpit mode is OFF: the previous values are back. The companion window will open normally on the next game start.'
-  exit 0
+  $J.changed = $n; $J.mode = 'off'; $J.mismatch = @($settings.cockpit.Keys | Where-Object { $e = @(Find-ConfigElement $res.NewText $_); -not ($e.Count -ge 1 -and $e[0].Value -eq [string]$settings.cockpit[$_]) }); $J.valuesMatch = ($J.mismatch.Count -eq 0); Done 0 'off'
 } catch {
   Write-Host "ERROR: $($_.Exception.Message)"
-  exit 1
+  if (-not $J.message) { $J.message = $_.Exception.Message }; Done 1 'error'
 }

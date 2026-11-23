@@ -22,6 +22,12 @@
   .\x4cockpit3.ps1 -Restore
   .\x4cockpit3.ps1 -Simulate target             # the target arrangement on paper
   .\x4cockpit3.ps1 -Check -SeatMm 600           # which fov fits a 60 cm eye distance
+  .\x4cockpit3.ps1 -Json                        # arrangement check + one "@@X4JSON {...}" line (for the x4switch manager)
+
+  -Json (check mode, i.e. without -Preset): after the normal text, one line "@@X4JSON " + compact JSON:
+    { tool, action:"check", exit, monitors:[{device,name,code,x,y,w,h,primary,role,widthMm,heightMm,source}],
+      triple:{ ok, problems[], notes[], rect{x,y,w,h}, left, centre, right }, summary:"Left | Centre | Right" }
+  Exit codes: 0 = triple (and uw-left-only) match, 2 = an arrangement does not match, 1 = error.
 #>
 [CmdletBinding()]
 param(
@@ -39,7 +45,8 @@ param(
   [string]$MonitorsJson = '',
   [ValidateSet('none', 'target')][string]$Simulate = 'none',
   [double]$Fov = 0,
-  [int]$SeatMm = 0
+  [int]$SeatMm = 0,
+  [switch]$Json
 )
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 + "powershell -File": $PSScriptRoot is empty in param defaults, so compute it here.
@@ -104,6 +111,7 @@ try {
   foreach ($p in $toShow) {
     $pl = Get-CockpitPlan -Mons $mons -Preset $p -Settings $settings -Area $Area
     if ($p -eq $Preset) { $plan = $pl }
+    if ($p -eq 'triple') { $triplePlan = $pl }
     Write-Host "== $p : $($script:PresetInfo[$p])"
     if ($pl.Ok) { Write-Host '   ARRANGEMENT: OK' } else { Write-Host "   ARRANGEMENT: DOES NOT MATCH ($($pl.Problems.Count) problem(s))" }
     foreach ($x in $pl.Problems) { Write-Host "   ! $x" }
@@ -139,7 +147,29 @@ try {
     } catch { Write-Host "config.xml unreadable: $($_.Exception.Message)" }
   }
 
-  if ($Check -or -not $Preset) { exit $exit }
+  if ($Check -or -not $Preset) {
+    if ($Json) {
+      $tp = $triplePlan
+      if (-not $tp) { $tp = Get-CockpitPlan -Mons $mons -Preset 'triple' -Settings $settings }
+      function ShortName($m) { if (-not $m) { return '?' }; if ($m.Name) { return $m.Name }; if ($m.Code -and $m.Code -ne '?') { return $m.Code }; return ($m.Device -replace '^\\\\\.\\', '') }
+      $role = @{}
+      if ($tp.Centre) { $role[$tp.Centre.Device] = 'centre' }
+      if ($tp.Left) { $role[$tp.Left.Device] = 'left' }
+      if ($tp.Right) { $role[$tp.Right.Device] = 'right' }
+      $r = $null; if ($tp.Rect) { $r = [ordered]@{ x = $tp.Rect.X; y = $tp.Rect.Y; w = $tp.Rect.W; h = $tp.Rect.H } }
+      Write-X4Json ([ordered]@{
+          tool = 'x4cockpit3'; action = 'check'; exit = $exit; synthetic = $synthetic
+          monitors = @($mons | Sort-Object X | ForEach-Object {
+              $ro = 'unused'; if ($role.ContainsKey($_.Device)) { $ro = $role[$_.Device] }
+              [ordered]@{ device = $_.Device; name = $_.Name; code = $_.Code; x = $_.X; y = $_.Y; w = $_.W; h = $_.H; primary = [bool]$_.Primary
+                role = $ro; widthMm = $_.WidthMm; heightMm = $_.HeightMm; source = [string]$_.PathSource } })
+          triple = [ordered]@{ ok = [bool]$tp.Ok; problems = @($tp.Problems); notes = @($tp.Notes); rect = $r
+            left = (ShortName $tp.Left); centre = (ShortName $tp.Centre); right = (ShortName $tp.Right) }
+          summary = ('{0} | {1} | {2}' -f (ShortName $tp.Left), (ShortName $tp.Centre), (ShortName $tp.Right))
+        })
+    }
+    exit $exit
+  }
   if ($WhatIf) { Write-Host 'WhatIf: nothing changed.'; exit $exit }
   if (-not $plan.Ok -and -not $Force) {
     Write-Host "REFUSED: the Windows arrangement does not match '$Preset' (see the ! lines). Fix the arrangement, or add -Force to stretch anyway."
@@ -178,5 +208,6 @@ try {
   exit 0
 } catch {
   Write-Host "ERROR: $($_.Exception.Message)"
+  if ($Json) { Write-X4Json ([ordered]@{ tool = 'x4cockpit3'; action = 'check'; exit = 1; error = $_.Exception.Message }) }
   exit 1
 }

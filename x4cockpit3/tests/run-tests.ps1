@@ -120,6 +120,40 @@ try {
   $fs = Get-FovForSeat 514 720 0.2317 1.7778
   Assert ([Math]::Abs($fs - 0.6667) -lt 0.002) 'A19 seat 514 mm -> fov 0.6667' "got $fs"
 
+  # EDID identity (bug of 2026-11-23: every display got the inactive laptop panel's EDID, read as child 0 of each
+  # display) and the geometry fallback when names are missing or unreliable. Children = the real read-out of that day.
+  $kids = @([pscustomobject]@{ Flags = 2; Id = '\\?\DISPLAY#NCP004D#5&acf3954&2&UID4354#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}' },
+    [pscustomobject]@{ Flags = 3; Id = '\\?\DISPLAY#AUS3438#5&acf3954&2&UID4355#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}' })
+  $sel = Select-MonitorInterface -QdcPath '' -Children $kids
+  Assert ($sel.Path -match 'AUS3438' -and $sel.Source -eq 'active') 'A22 inactive panel listed first: the ACTIVE child is used, not child 0' "$($sel.Path) $($sel.Source)"
+  $sel = Select-MonitorInterface -QdcPath '\\?\DISPLAY#DELD05F#5&acf3954&2&UID4610#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}' -Children $kids
+  Assert ($sel.Path -match 'DELD05F' -and $sel.Source -eq 'qdc') 'A23 the QueryDisplayConfig target path wins over EnumDisplayDevices'
+  $sel = Select-MonitorInterface -QdcPath '' -Children @([pscustomobject]@{ Flags = 2; Id = '\\?\DISPLAY#ABC0001#1#g' })
+  $sel2 = Select-MonitorInterface -QdcPath '' -Children @()
+  Assert ($sel.Source -eq 'first' -and $sel2.Source -eq 'none' -and -not $sel2.Path) 'A24 no active child: first child as last resort; no child: none'
+  function Bug([string]$dev, [int]$x, [int]$y, [int]$w, [int]$h, [bool]$prim) { return (M $dev 'NCP004D' '' $x $y $w $h $prim 344 194 60) }
+  $buggy = @((Bug 'DISPLAY2' -1920 180 1920 1080 $false), (Bug 'DISPLAY1' 0 0 3440 1440 $true), (Bug 'DISPLAY3' 3440 180 1920 1080 $false))
+  $p = Get-CockpitPlan -Mons $buggy -Preset 'triple' -Settings $S
+  Assert ($p.Ok -and (Has $p.Notes 'recognised by geometry') -and $p.Left.Device -eq '\\.\DISPLAY2' -and $p.Right.Device -eq '\\.\DISPLAY3' -and (RectIs $p.Rect -1920 0 7280 1440)) 'A25 the 2026-11-23 read-out (one EDID on all three displays): triple OK by geometry, with a note' (($p.Problems + $p.Notes) -join ' | ')
+  function Anon([string]$dev, [int]$x, [int]$y, [int]$w, [int]$h, [bool]$prim) { return [pscustomobject]@{ Device = "\\.\$dev"; Name = ''; Code = '?'; Primary = $prim; X = $x; Y = $y; W = $w; H = $h; Hz = 60; WidthMm = 0; HeightMm = 0; PitchMm = 0.0 } }
+  $p = Get-CockpitPlan -Mons @((Anon 'DISPLAY2' -1920 180 1920 1080 $false), (Anon 'DISPLAY1' 0 0 3440 1440 $true), (Anon 'DISPLAY3' 3440 180 1920 1080 $false)) -Preset 'triple' -Settings $S
+  Assert ($p.Ok -and (Has $p.Notes 'recognised by geometry')) 'A26 no EDID names or codes at all: triple OK by geometry' (($p.Problems + $p.Notes) -join ' | ')
+  $p = Get-CockpitPlan -Mons @((Anon 'DISPLAY2' -1920 180 1920 1080 $false), (Anon 'DISPLAY1' 0 0 3440 1440 $true), (Anon 'DISPLAY3' 3440 0 2560 1440 $false)) -Preset 'triple' -Settings $S
+  Assert (-not $p.Ok) 'A27 geometry fallback needs two equal side monitors (1920x1080 vs 2560x1440: refused)'
+  $p = Get-CockpitPlan -Mons @((Anon 'DISPLAY2' -3840 180 1920 1080 $false), (Anon 'DISPLAY1' 0 0 3440 1440 $true), (Anon 'DISPLAY3' 3440 180 1920 1080 $false)) -Preset 'triple' -Settings $S
+  Assert (-not $p.Ok) 'A28 geometry fallback needs both sides adjacent (left one not touching: refused)'
+  $p = Get-CockpitPlan -Mons @((Dell 'DISPLAY3' -1920 180), (UW), (Laptop 3440 180)) -Preset 'triple' -Settings $S
+  Assert ((-not $p.Ok) -and (Has $p.Problems 'NCP004D')) 'A29 a reliably identified non-matching monitor is not taken by geometry' ($p.Problems -join ' | ')
+  # live, read-only: every display maps to its own monitor device (the bug mapped all three to one)
+  $live = @(Get-LiveMonitors)
+  $paths = @($live | Where-Object { $_.MonitorPath } | ForEach-Object { $_.MonitorPath })
+  Assert ($live.Count -ge 1 -and $paths.Count -eq $live.Count -and @($paths | Select-Object -Unique).Count -eq $paths.Count) "A30 live: $($live.Count) display(s), each with its own monitor device ($((@($live | ForEach-Object { "$($_.Name)[$($_.Code)]/$($_.PathSource)" })) -join ', '))"
+  $bj = Join-Path $run 'topo-buggy.json'; $buggy | ConvertTo-Json | Set-Content -LiteralPath $bj -Encoding UTF8
+  $r = Invoke-Tool 'x4cockpit3.ps1' @('-Json', '-MonitorsJson', $bj)
+  $jl = @($r.Out -split "`r?`n" | Where-Object { $_ -like '@@X4JSON *' }) | Select-Object -Last 1
+  $j = $null; if ($jl) { $j = $jl.Substring(9) | ConvertFrom-Json }
+  Assert ($j -and $j.triple.ok -and $j.triple.rect.w -eq 7280 -and @($j.monitors | Where-Object { $_.role -eq 'left' }).Count -eq 1 -and @($j.monitors | Where-Object { $_.role -eq 'right' }).Count -eq 1) 'A31 x4cockpit3.ps1 -Json: one machine-readable line (triple ok, rect, roles)' $r.Out
+
   # CLI with synthetic topologies (implies WhatIf - never moves a window)
   $tj = Join-Path $run 'topo-bothleft.json'; $bothLeft | ConvertTo-Json | Set-Content -LiteralPath $tj -Encoding UTF8
   $gj = Join-Path $run 'topo-target.json'; $target | ConvertTo-Json | Set-Content -LiteralPath $gj -Encoding UTF8
@@ -205,6 +239,19 @@ try {
   $r = Invoke-Tool 'cockpit.ps1' @('off', '-SettingsFile', $sf)
   Assert ($r.Code -eq 2 -and $r.Out -match 'Nothing to restore' -and (Hash $cfg) -eq $orig) 'B7 off without state: refused, unchanged' $r.Out
 
+  # -Json contract (used by the x4switch manager): one "@@X4JSON {...}" line, exit codes unchanged
+  function J($out) { $l = @($out -split "`r?`n" | Where-Object { $_ -like '@@X4JSON *' }) | Select-Object -Last 1; if (-not $l) { return $null }; return ($l.Substring(9) | ConvertFrom-Json) }
+  $r = Invoke-Tool 'cockpit.ps1' @('status', '-Json', '-SettingsFile', $sf); $j = J $r.Out
+  Assert ($r.Code -eq 0 -and $j -and $j.result -eq 'off' -and $j.mode -eq 'off' -and -not $j.gameRunning -and -not $j.valuesMatch -and $j.configPath -eq $cfg) 'B10 status -Json: result off, config path' $r.Out
+  $r = Invoke-Tool 'cockpit.ps1' @('off', '-Json', '-SettingsFile', $sf); $j = J $r.Out
+  Assert ($r.Code -eq 2 -and $j.result -eq 'already-off' -and $j.exit -eq 2) 'B10 off -Json without state: already-off, exit 2' $r.Out
+  $r = Invoke-Tool 'cockpit.ps1' @('on', '-Json', '-WhatIf', '-SettingsFile', $sf); $j = J $r.Out
+  Assert ($r.Code -eq 0 -and $j.result -eq 'whatif' -and $j.changed -gt 0 -and (Hash $cfg) -eq $orig) 'B10 on -Json -WhatIf: whatif, changes counted, nothing written' $r.Out
+  $r = Invoke-Tool 'cockpit.ps1' @('on', '-Json', '-SettingsFile', $sf); $j = J $r.Out
+  Assert ($r.Code -eq 0 -and $j.result -eq 'on' -and $j.mode -eq 'on' -and $j.valuesMatch -and $j.flagPresent -and $j.backup -and (Test-Path -LiteralPath $j.backup)) 'B10 on -Json: on, values match, flag present, backup path' $r.Out
+  $r = Invoke-Tool 'cockpit.ps1' @('off', '-Json', '-SettingsFile', $sf); $j = J $r.Out
+  Assert ($r.Code -eq 0 -and $j.result -eq 'off' -and -not $j.flagPresent -and -not $j.valuesMatch -and (Hash $cfg) -eq $orig) 'B10 off -Json: off, flag gone, file back to the original bytes' $r.Out
+
   $fake = Start-Process -FilePath $fakeExe -ArgumentList '120' -WindowStyle Hidden -PassThru
   $script:started += $fake.Id
   Start-Sleep -Milliseconds 500
@@ -214,6 +261,8 @@ try {
   Assert ($r.Code -eq 0 -and $r.Out -match 'a real run would be refused' -and (Hash $cfg) -eq $orig) 'B8 on -WhatIf allowed while it runs'
   $r = Invoke-Tool 'cockpit.ps1' @('off', '-SettingsFile', $sf)
   Assert ($r.Code -eq 2 -and $r.Out -match 'REFUSED: the game is running') 'B8 off refused while fake X4 runs' $r.Out
+  $r = Invoke-Tool 'cockpit.ps1' @('on', '-Json', '-SettingsFile', $sf); $j = J $r.Out
+  Assert ($r.Code -eq 2 -and $j.result -eq 'refused-game-running' -and $j.gameRunning -and @($j.gamePids) -contains $fake.Id) 'B8 on -Json while it runs: refused-game-running with the pid' $r.Out
   Stop-Process -Id $fake.Id -ErrorAction SilentlyContinue
   $fake.WaitForExit(5000) | Out-Null
 

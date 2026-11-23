@@ -1,0 +1,25 @@
+#include <windows.h>
+1 RT_MANIFEST "x4switch.manifest"
+1 ICON "x4switch.ico"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "X4Switch - choose how X4: Foundations starts (cockpit or single monitor + dashboard)"
+      VALUE "ProductName", "X4Switch (unofficial fan project, not affiliated with Egosoft)"
+      VALUE "FileVersion", "0.1.0"
+      VALUE "OriginalFilename", "X4Switch.exe"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
